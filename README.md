@@ -1,2 +1,2 @@
 # SavagePF-importer
-Module d'import pour PAthfinder Savage
+Module d'import pour Pathfinder Savage
