@@ -15,7 +15,7 @@
     }]
   },
   "license": "LICENSE",
-  "url": "https://raw.githubusercontent.com/taspoff/savagedus-companion",
-  "manifest": "https://raw.githubusercontent.com/taspoff/savagedus-companion/releases/latest/download/module.json",
+  "url": "https://raw.githubusercontent.com/taspoff/savagedus-companion/main/module.json",
+  "manifest": "https://raw.githubusercontent.com/taspoff/savagedus-companion/main/module.json",
   "download": "https://raw.githubusercontent.com//taspoff/savagedus-companion/releases/latest/download/savagedus-companion.zip"
 }
