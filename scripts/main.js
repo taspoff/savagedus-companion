@@ -45,6 +45,15 @@ async function runImport(actorId) {
         <p><strong>${report.length}</strong> élément(s) sans correspondance dans les compendiums (créés en items bruts) :</p>
         <ul>${report.map((r) => `<li>${r}</li>`).join('')}</ul>` : '<p>Toutes les correspondances ont été résolues.</p>'}
     `;
+
+    new foundry.applications.api.DialogV2({
+      window: { title: 'Import Savaged.us' },
+      content: dialogContent,
+      buttons: [{ action: 'ok', label: 'OK', default: true }],
+    }).render(true);
+
+    // Trace complète dans la console (pratique pour enrichir ALIASES)
+    if (report.length) console.warn(`${MODULE_ID} | Non-correspondances :`, report);
     new foundry.applications.api.DialogV2.wait({
       window: { title: 'Import Savaged.us' },
       content: dialogContent,
