@@ -1,4 +1,4 @@
-import { buildIndex, findRecord, suggestMatches } from './matcher.js';
+import { buildIndex, findRecord, suggestMatches, DEFAULT_PRIORITY_ORDER } from './matcher.js';
 import { importCharacter, collectRequests } from './importer.js';
 
 const MODULE_ID = 'savagedus-companion';
