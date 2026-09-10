@@ -161,6 +161,9 @@ Hooks.once('ready', () => {
   if (!game.modules.get(MODULE_ID)?.active) return;
   tryInject();
   console.log(`${MODULE_ID} | prêt (Foundry ${game.version})`);
+  console.log('SDC-DEBUG | ready tiré, observer va démarrer');
+  ...
+});
 });
 
 // Repli : si l'onglet est re-rendu, on ré-injecte (le garde
