@@ -151,5 +151,8 @@ function suggestMatches(type, name, limit = 5, minScore = 0.3) {
   scored.sort((a, b) => b.score - a.score || a.priority - b.priority);
   return scored.slice(0, limit);
 }
+function getDuplicates(key) {
+  return INDEX?.duplicates?.get(key) ?? [];
+}
 
-export { slugify, buildIndex, findRecord, suggestMatches, IGNORED_NAMES, DEFAULT_PRIORITY_ORDER };
+export { slugify, buildIndex, findRecord, suggestMatches, IGNORED_NAMES, DEFAULT_PRIORITY_ORDER, getDuplicates };
