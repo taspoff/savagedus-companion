@@ -9,6 +9,15 @@ const SUGGESTION_COUNT = 5;
 
 Hooks.once('init', () => {
   game.modules.get(MODULE_ID).api = { importCharacter, collectRequests, buildIndex };
+
+  game.settings.register(MODULE_ID, 'priorityPacks', {
+    name: 'Priorité des compendiums',
+    hint: 'Ids des packs, du plus prioritaire au moins prioritaire, séparés par des virgules. Les packs achetés doivent précéder les SRD gratuits. Vide = ordre par défaut.',
+    scope: 'world',
+    config: true,
+    type: String,
+    default: DEFAULT_PRIORITY_ORDER.join(','),
+  });
 });
 
 /** Retourne un HTMLElement à partir du paramètre html d'un hook (jQuery ou natif). */
