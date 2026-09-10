@@ -146,14 +146,14 @@ async function importCharacter(data, report = [], manual = {}, meta = null){
   const items = [];
 
   if (data.race) {
-    const { source } = await resolveItem('ancestry', data.race, report, manual);
+    const { source } = await resolveItem('ancestry', data.race, report, manual,meta);
     items.push(source ?? { name: data.race, type: 'ancestry', system: {} });
   }
 
   for (const sk of Array.isArray(data.skills) ? data.skills : []) {
     if (IGNORED_NAMES.has(slugify(sk.name))) continue;
     if ((sk.dieValue ?? 4) < 4) continue;
-    const { source } = await resolveItem('skill', sk.name, report, manual);
+    const { source } = await resolveItem('skill', sk.name, report, manual,meta);
     const d = source ?? { name: sk.name, type: 'skill', system: {} };
     d.system ??= {};
     d.system.die = { ...(d.system.die ?? {}), sides: sk.dieValue, modifier: sk.mod ?? 0 };
@@ -165,7 +165,7 @@ async function importCharacter(data, report = [], manual = {}, meta = null){
 
   for (const h of Array.isArray(data.hindrances) ? data.hindrances : []) {
     const { base, detail } = extractHindranceInfo(h.name);
-    const { source } = await resolveItem('hindrance', base, report, manual);
+    const { source } = await resolveItem('hindrance', base, report, manual,meta);
     const d = source ?? { name: base, type: 'hindrance', system: {} };
     d.system ??= {};
     d.name = detail ? `${base} (${detail})` : base;
@@ -177,20 +177,20 @@ async function importCharacter(data, report = [], manual = {}, meta = null){
   for (const e of Array.isArray(data.edges) ? data.edges : []) {
     const name = typeof e === 'string' ? e : e.name;
     if (!name) continue;
-    const { source } = await resolveItem('edge', name, report, manual);
+    const { source } = await resolveItem('edge', name, report, manual,meta);
     items.push(source ?? { name, type: 'edge', system: {} });
   }
 
   for (const p of Array.isArray(data.powers) ? data.powers : []) {
     if (!p?.name) continue;
-    const { source } = await resolveItem('power', p.name, report, manual);
+    const { source } = await resolveItem('power', p.name, report, manual,meta);
     items.push(source ?? { name: p.name, type: 'power', system: {} });
   }
 
   for (const w of Array.isArray(data.weapons) ? data.weapons : []) {
     if (!w?.name) continue;
     const profile = w.profiles?.[w.activeProfile ?? 0] ?? w.profiles?.[0] ?? {};
-    const { source } = await resolveItem('weapon', w.name, report, manual);
+    const { source } = await resolveItem('weapon', w.name, report, manual,meta);
     const d = source ?? { name: w.name, type: 'weapon', system: {} };
     d.system ??= {};
     Object.assign(d.system, {
@@ -210,7 +210,7 @@ async function importCharacter(data, report = [], manual = {}, meta = null){
 
   for (const a of Array.isArray(data.armor) ? data.armor : []) {
     if (!a?.name || IGNORED_NAMES.has(slugify(a.name))) continue;
-    const { source } = await resolveItem('armor', a.name, report, manual);
+    const { source } = await resolveItem('armor', a.name, report, manual,meta);
     const d = source ?? { name: a.name, type: 'armor', system: {} };
     d.system ??= {};
     Object.assign(d.system, {
@@ -233,7 +233,7 @@ async function importCharacter(data, report = [], manual = {}, meta = null){
 
   for (const g of Array.isArray(data.gear) ? data.gear : []) {
     if (!g?.name) continue;
-    const { source } = await resolveItem('gear', g.name, report, manual);
+    const { source } = await resolveItem('gear', g.name, report, manual,meta);
     const d = source ?? { name: g.name, type: 'gear', system: {} };
     d.system ??= {};
     Object.assign(d.system, {
