@@ -107,8 +107,10 @@ const IMPORT_BUTTON_HTML = `
 
 function injectImportButton(html) {
   const header = html.querySelector('.directory-header .action-buttons')
-    ?? html.querySelector('.header-actions')
-    ?? html.querySelector('.directory-header');
+    ?? html.querySelector('.action-buttons')
+    ?? html.querySelector('.directory-header')
+    ?? html.querySelector('header')
+    ?? (html.classList?.contains('action-buttons') ? html : null);
   if (!header) return;
   if (header.querySelector('.savagedus-import')) return; // déjà injecté
   header.insertAdjacentHTML('beforeend', IMPORT_BUTTON_HTML);
@@ -142,21 +144,28 @@ async function onImportClick(event) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Amorçage                                                            */
-/* ------------------------------------------------------------------ */
-
 Hooks.once('init', () => {
   registerSettings();
 });
 
-Hooks.on('renderActorsDirectory', (app, html, data) => {
-  const el = resolveHtml(html);
-  if (el) injectImportButton(el);
-});
+/** Injecte le bouton dans l'onglet Acteurs si le DOM existe. */
+function tryInject() {
+  const root = document.querySelector('#actors');
+  if (root) injectImportButton(root);
+}
 
-// Journal de chargement
+// Injection principale : au chargement du monde, le DOM existe déjà
 Hooks.once('ready', () => {
   if (!game.modules.get(MODULE_ID)?.active) return;
-  console.log(`${MODULE_ID} | prêt (Foundry ${game.version}, `
-    + `SWADE ${game.system.id === 'swade' ? game.system.version : 'inconnu'}).`);
+  tryInject();
+  console.log(`${MODULE_ID} | prêt (Foundry ${game.version})`);
 });
+
+// Repli : si l'onglet est re-rendu, on ré-injecte (le garde
+// anti-double-injection de injectImportButton empêche les doublons)
+for (const hook of ['renderActorsTab', 'renderActorsDirectory', 'renderSidebar']) {
+  Hooks.on(hook, (app, html) => {
+    const el = resolveHtml(html) ?? document.querySelector('#actors');
+    if (el) injectImportButton(el);
+  });
+}
