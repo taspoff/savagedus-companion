@@ -111,6 +111,7 @@ function injectImportButton(html) {
     ?? html.querySelector('.directory-header')
     ?? html.querySelector('header')
     ?? (html.classList?.contains('action-buttons') ? html : null);
+  console.debug('savagedus-companion | injectImportButton, header =', !!header);
   if (!header) return;
   if (header.querySelector('.savagedus-import')) return; // déjà injecté
   header.insertAdjacentHTML('beforeend', IMPORT_BUTTON_HTML);
@@ -151,6 +152,7 @@ Hooks.once('init', () => {
 /** Injecte le bouton dans l'onglet Acteurs si le DOM existe. */
 function tryInject() {
   const root = document.querySelector('#actors');
+  console.debug('savagedus-companion | tryInject appelé');
   if (root) injectImportButton(root);
 }
 
