@@ -60,3 +60,49 @@ function findRecord(type, name) {
 }
 
 export { slugify, buildIndex, findRecord, IGNORED_NAMES };
+
+function bigrams(s) {
+  const out = new Set();
+  for (let i = 0; i < s.length - 1; i++) out.add(s.slice(i, i + 2));
+  return out;
+}
+
+/** Coefficient de Dice entre deux chaînes (0 à 1) */
+export function diceSimilarity(a, b) {
+  const A = bigrams(slugify(a)), B = bigrams(slugify(b));
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const g of A) if (B.has(g)) inter++;
+  return (2 * inter) / (A.size + B.size);
+}
+
+/**
+ * Retourne les N meilleures correspondances pour un nom donné,
+ * triées par score décroissant. Score = 0..1.
+ */
+export function suggestMatches(type, name, limit = 5, minScore = 0.3) {
+  if (!INDEX) throw new Error('Index non construit');
+  const clean = String(name).replace(/\s*\((.*)\)\s*$/, '').trim();
+  const reqTokens = new Set(slugify(clean).split('-').filter(Boolean));
+
+  const scored = [];
+  const seen = new Set();
+  for (const rec of INDEX.bySlug.values()) {
+    if (rec.type !== type || seen.has(rec.uuid)) continue;
+    seen.add(rec.uuid);
+
+    let score = diceSimilarity(clean, rec.name);
+
+    // Recouvrement de tokens (pondéré fortement : les inversions comptent beaucoup)
+    const recTokens = new Set(slugify(rec.name).split('-').filter(Boolean));
+    let shared = 0;
+    for (const t of reqTokens) if (recTokens.has(t)) shared++;
+    if (reqTokens.size) {
+      const overlap = shared / Math.max(reqTokens.size, recTokens.size);
+      score = Math.max(score, score * 0.5 + overlap * 0.5);
+    }
+
+    if (score >= minScore) scored.push({ ...rec, score });
+  }
+  return scored.sort((a, b) => b.score - a.score).slice(0, limit);
+}
