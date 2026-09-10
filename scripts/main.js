@@ -1,176 +1,162 @@
-import { buildIndex, findRecord, suggestMatches, DEFAULT_PRIORITY_ORDER, getDuplicates } from './matcher.js';
-import { importCharacter, collectRequests } from './importer.js';
+/**
+ * savagedus-companion — scripts/main.js
+ *
+ * Amorçage du module : settings, bouton d'import dans le répertoire
+ * des acteurs, lecture du fichier JSON exporté de savaged.us.
+ */
+'use strict';
+
+import { importCharacter } from './importer.js';
+import { invalidateIndex } from './matcher.js';
+
+/* ------------------------------------------------------------------ */
+/* Identité du module                                                  */
+/* ------------------------------------------------------------------ */
 
 const MODULE_ID = 'savagedus-companion';
+const ICON_IMPORT = '<i class="fas fa-download"></i>';
 
-const PRESELECT_THRESHOLD = 0.75; // pré-coche la meilleure suggestion si score >= 75 %
-const MIN_SUGGESTION_SCORE = 0.3;
-const SUGGESTION_COUNT = 5;
+/* ------------------------------------------------------------------ */
+/* Utilitaires                                                         */
+/* ------------------------------------------------------------------ */
 
-Hooks.once('init', () => {
-  game.modules.get(MODULE_ID).api = { importCharacter, collectRequests, buildIndex };
-
-  game.settings.register(MODULE_ID, 'priorityPacks', {
-    name: 'Priorité des compendiums',
-    hint: 'Ids des packs, du plus prioritaire au moins prioritaire, séparés par des virgules. Les packs achetés doivent précéder les SRD gratuits. Vide = ordre par défaut.',
-    scope: 'world',
-    config: true,
-    type: String,
-    default: DEFAULT_PRIORITY_ORDER.join(','),
-  });
-});
-
-/** Retourne un HTMLElement à partir du paramètre html d'un hook (jQuery ou natif). */
+/**
+ * Résout un élément cible depuis un hook, en tolérant à la fois un
+ * HTMLElement natif (Foundry v13) et un objet jQuery historique.
+ */
 function resolveHtml(html) {
-  if (html instanceof HTMLElement) return html;
-  if (html?.[0] instanceof HTMLElement) return html[0];
+  if (!html) return null;
+  if (typeof html.querySelector === 'function') return html;      // natif v13
+  if (html[0] && typeof html[0].querySelector === 'function') return html[0]; // jQuery
   return null;
 }
 
-async function pickFile() {
+/** Ouvre un sélecteur de fichier JSON et retourne l'objet parsé. */
+function pickJsonFile() {
   return new Promise((resolve, reject) => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = '.json,application/json';
-    input.onchange = () =>
-      input.files.length ? resolve(input.files[0]) : reject(new Error('Aucun fichier sélectionné'));
-    input.onerror = () => reject(new Error('Erreur de lecture du fichier'));
+    input.style.display = 'none';
+    document.body.appendChild(input);
+
+    const cleanup = () => {
+      input.remove();
+      window.removeEventListener('focus', onFocusWindow, true);
+    };
+    const onFocusWindow = () => {
+      // Fermeture du sélecteur sans choix : résout null après un délai court
+      setTimeout(() => {
+        if (document.body.contains(input)) { cleanup(); resolve(null); }
+      }, 500);
+    };
+    window.addEventListener('focus', onFocusWindow, true);
+
+    input.addEventListener('change', () => {
+      const file = input.files?.[0];
+      if (!file) { cleanup(); resolve(null); return; }
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          cleanup();
+          resolve(JSON.parse(String(reader.result)));
+        } catch (err) {
+          cleanup();
+          reject(err);
+        }
+      };
+      reader.onerror = () => {
+        cleanup();
+        reject(reader.error ?? new Error('Lecture du fichier impossible.'));
+      };
+      reader.readAsText(file);
+    });
+
     input.click();
   });
 }
 
-/**
- * Affiche la liste des éléments à arbitrer et retourne la map des choix manuels
- * { "<type>:<slug>" : "<uuid du compendium choisi>" }.
- */
-function reviewDialog(toReview) {
-  return new Promise((resolve) => {
-    const rows = toReview
-      .map((r, i) => {
-        const options = r.suggestions
-          .map((s, j) => {
-            const pre = j === 0 && s.score >= PRESELECT_THRESHOLD ? ' selected' : '';
-                  return `<option value="${s.uuid}"${pre}>${s.name} — ${Math.round(s.score * 100)} % [${s.pack ?? '?'}]</option>`;
-          })
-          .join('');
-        return `
-          <div style="margin-bottom:8px">
-            <label><strong>${r.type}</strong>&nbsp;: ${r.name}</label>
-            <select data-key="${r.key}" style="width:100%">
-              <option value="">— Aucun (créer en item brut) —</option>
-              ${options}
-            </select>
-          </div>`;
-      })
-      .join('');
+/* ------------------------------------------------------------------ */
+/* Settings                                                            */
+/* ------------------------------------------------------------------ */
 
-    let dlg;
-    dlg = new foundry.applications.api.DialogV2({
-      window: { title: 'Correspondances à valider' },
-      content: `<p>${toReview.length} élément(s) nécessitent votre arbitrage :</p>${rows}`,
-      buttons: [
-        {
-          action: 'ok',
-          label: 'Importer',
-          default: true,
-          callback: () => {
-            const picks = {};
-            const el = resolveHtml(dlg.element);
-            el?.querySelectorAll('select[data-key]').forEach((sel) => {
-              if (sel.value) picks[sel.dataset.key] = sel.value;
-            });
-            resolve(picks);
-          },
-        },
-      ],
-    });
-    dlg.render(true);
+function registerSettings() {
+  game.settings.register(MODULE_ID, 'priorityPacks', {
+    name: 'Ordre de priorité des packs',
+    hint: 'Ids de compendiums séparés par des virgules, du plus prioritaire '
+      + 'au moins prioritaire (ex. "swpf-apg-2,swpf-apg,swpf-core-rules"). '
+      + 'Surcharge la priorité par défaut.',
+    scope: 'world',
+    config: true,
+    type: String,
+    default: '',
+    onChange: () => invalidateIndex(),
   });
 }
 
-async function runImport() {
+/* ------------------------------------------------------------------ */
+/* Bouton d'import dans le répertoire des acteurs                      */
+/* ------------------------------------------------------------------ */
+
+const IMPORT_BUTTON_HTML = `
+  <button type="button" class="header-action savagedus-import"
+          data-action="savagedusImport" data-tooltip="Importer depuis savaged.us"
+          aria-label="Importer depuis savaged.us">
+    ${ICON_IMPORT}
+  </button>`;
+
+function injectImportButton(html) {
+  const header = html.querySelector('.directory-header .action-buttons')
+    ?? html.querySelector('.header-actions')
+    ?? html.querySelector('.directory-header');
+  if (!header) return;
+  if (header.querySelector('.savagedus-import')) return; // déjà injecté
+  header.insertAdjacentHTML('beforeend', IMPORT_BUTTON_HTML);
+  header.querySelector('.savagedus-import')
+    .addEventListener('click', onImportClick);
+}
+
+async function onImportClick(event) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  let data;
   try {
-    const file = await pickFile();
-    const data = JSON.parse(await file.text());
-
-    ui.notifications.info('Savaged.us : indexation des compendiums en cours...');
-    await buildIndex();
-
-    // Pré-résolution : tout ce qui matche automatiquement ne pose pas de question
-    const requests = collectRequests(data);
-    const manual = {};
-    const toReview = [];
-
-    for (const req of requests) {
-      if (findRecord(req.type, req.name)) continue; // résolution automatique OK
-      const suggestions = suggestMatches(req.type, req.name, SUGGESTION_COUNT, MIN_SUGGESTION_SCORE);
-      toReview.push({ ...req, suggestions });
-    }
-
-    if (toReview.length) {
-      Object.assign(manual, await reviewDialog(toReview));
-    }
-
-    const report = [];
-    const meta = { resolved: [], duplicates: [] };
-    const actor = await importCharacter(data, report, manual, meta);
-
-    const resolvedRows = meta.resolved
-      .map((r) => `<li>${r.name} <em>[pack&nbsp;: ${r.pack}]</em></li>`)
-      .join('');
-    const dupRows = meta.duplicates
-      .map((dup) => {
-        const alts = dup.alternatives.map((a) => `${a.name} (${a.pack})`).join(', ');
-        return `<li><strong>${a === null ? '' : ''}${dup.name}</strong> (${dup.type}) — retenu depuis <em>${dup.retainedPack}</em> ; aussi présent dans&nbsp;: ${dup.alternatives.map((a) => `${a.name} [${a.pack}]`).join(', ')}</li>`;
-      })
-      .join('');
-
-    const dialogContent = `
-      <p>Acteur <strong>${actor.name}</strong> importé avec succès.</p>
-      <h4>Pack source des items résolus</h4>
-      ${meta.resolved.length ? `<ul>${resolvedRows}</ul>` : '<p>Aucun item résolu depuis un compendium.</p>'}
-      ${
-        meta.duplicates.length
-          ? `<h4>Doublons potentiels</h4>
-             <ul>${meta.duplicates.map((d) =>
-               `<li><strong>${d.name}</strong> (${d.type}) : retenu depuis <em>${d.retainedPack}</em> ; alternatives : ${d.alternatives.map((a) => `${a.name} [${a.pack}]`).join(', ')}</li>`).join('')}</ul>`
-          : '<p>Aucun doublon de compendium détecté pour les items importés.</p>'
-      }
-      ${
-        report.length
-          ? `<p><strong>${report.length}</strong> élément(s) sans correspondance retenue (créés en items bruts) :</p>
-             <ul>${report.map((r) => `<li>${r}</li>`).join('')}</ul>`
-          : '<p>Toutes les correspondances ont été résolues.</p>'
-      }
-    `;
-    new foundry.applications.api.DialogV2({
-      window: { title: 'Import Savaged.us' },
-      content: dialogContent,
-      buttons: [{ action: 'ok', label: 'OK', default: true }],
-    }).render(true);
-
-    if (report.length) console.warn(`${MODULE_ID} | Non-correspondances :`, report);
-    actor.sheet.render(true);
+    data = await pickJsonFile();
   } catch (err) {
-    console.error(`${MODULE_ID} | Erreur d'import`, err);
-    ui.notifications.error(`Savaged.us : échec de l'import — ${err.message}`);
+    console.error(`${MODULE_ID} | lecture du fichier échouée:`, err);
+    ui.notifications.error(`${MODULE_ID} | fichier JSON illisible.`);
+    return;
+  }
+  if (!data) return; // sélection annulée
+
+  try {
+    const actor = await importCharacter(data);
+    ui.notifications.info(
+      `${MODULE_ID} | ${actor.name} importé avec succès.`,
+    );
+  } catch (err) {
+    console.error(`${MODULE_ID} | import échoué:`, err);
+    ui.notifications.error(`${MODULE_ID} | import échoué (voir console).`);
   }
 }
 
-Hooks.on('renderActorDirectory', (app, html) => {
-  if (!game.modules.get(MODULE_ID)?.active) return;
+/* ------------------------------------------------------------------ */
+/* Amorçage                                                            */
+/* ------------------------------------------------------------------ */
+
+Hooks.once('init', () => {
+  registerSettings();
+});
+
+Hooks.on('renderActorsDirectory', (app, html, data) => {
   const el = resolveHtml(html);
-  if (!el) return;
-  if (el.querySelector('.savagedus-import-btn')) return;
+  if (el) injectImportButton(el);
+});
 
-  const footer = el.querySelector('.directory-footer');
-  if (!footer) return;
-
-  const btn = document.createElement('button');
-  btn.className = 'savagedus-import-btn';
-  btn.style.flex = '0 0 auto';
-  btn.innerHTML = '<i class="fas fa-file-import"></i> Savaged.us';
-  btn.title = 'Importer un personnage depuis un export savaged.us';
-  btn.addEventListener('click', runImport);
-  footer.appendChild(btn);
+// Journal de chargement
+Hooks.once('ready', () => {
+  if (!game.modules.get(MODULE_ID)?.active) return;
+  console.log(`${MODULE_ID} | prêt (Foundry ${game.version}, `
+    + `SWADE ${game.system.id === 'swade' ? game.system.version : 'inconnu'}).`);
 });
