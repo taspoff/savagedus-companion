@@ -15,14 +15,57 @@ const IGNORED_NAMES = new Set(['unarmored', 'unskilled', 'unarmed']);
 
 let INDEX = null;
 
+/**
+ * Priorité d'un pack : PLUS LE NOMBRE EST PETIT, PLUS LE PACK EST PRIVILÉGIÉ.
+ * Ordre par défaut (adaptable) :
+ *   0 : modules de règles achetés / premium (SWPF, Flash Gordon, etc.)
+ *   1 : packs inconnus (contenus maison, traductions...)
+ *   2 : SRD gratuits (swade-core-rules, archives-of-nethys...)
+ * Un paramètre module "priorityPacks" permet de forcer l'ordre pour
+ * des packs spécifiques, sous forme de liste d'ids séparés par des virgules,
+ * du plus prioritaire au moins prioritaire.
+ */
+const DEFAULT_PRIORITY_ORDER = [
+  // packs achetés d'abord (le plus spécifique/payant en tête)
+  'swpf-apg-2',
+  'swpf-apg',
+  'swpf-core-rules',
+  // SRD gratuits ensuite
+  'swade-core-rules',
+  'swade-deluxe',
+];
+
+function getPackPriority(pack, priorityOrder) {
+  const idx = priorityOrder.indexOf(pack.metadata.id);
+  return idx === -1 ? 1 : idx; // inconnu -> priorité intermédiaire
+}
+
 async function buildIndex() {
+  // Ordre de priorité éventuellement personnalisé via les settings du module
+  const custom = game.settings?.get('savagedus-companion', 'priorityPacks');
+  const priorityOrder = (custom?.trim() ? custom : DEFAULT_PRIORITY_ORDER.join(','))
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  // Packs d'items triés : prioritaires en premier
+  const itemPacks = game.packs.filter((p) => p.documentName === 'Item');
+  itemPacks.sort((a, b) => getPackPriority(a, priorityOrder) - getPackPriority(b, priorityOrder));
+
   INDEX = { bySlug: new Map(), byTokens: new Map() };
-  for (const pack of game.packs) {
-    if (pack.documentName !== 'Item') continue;
+
+  // Première passe : constitution des entrées (first-win, packs prioritaires en tête)
+  for (const pack of itemPacks) {
     const idx = await pack.getIndex({ fields: ['name', 'type', 'system.swid'] });
     for (const entry of idx.values()) {
       if (!entry?.type || !entry?.name) continue;
-      const rec = { uuid: entry.uuid, name: entry.name, type: entry.type };
+      const rec = {
+        uuid: entry.uuid,
+        name: entry.name,
+        type: entry.type,
+        pack: pack.metadata.id,
+        priority: getPackPriority(pack, priorityOrder),
+      };
       for (const key of [entry.system?.swid, entry.name]) {
         if (!key) continue;
         const k = `${entry.type}:${slugify(key)}`;
@@ -33,6 +76,12 @@ async function buildIndex() {
       if (!INDEX.byTokens.has(tk)) INDEX.byTokens.set(tk, rec);
     }
   }
+
+  // Seconde passe (recentrage) : ne garder en bySlug QUE les entrées du meilleur
+  // pack disponible quand plusieurs items de types différents ont été fusionnés —
+  // (aucune action nécessaire ici : first-win + tri initial suffit, mais on purge
+  // les doublons de bySlug dont l'entrée est d'une priorité plus basse qu'une
+  // autre entrée équivalente découverte après tri — déjà garanti par le tri.)
   return INDEX;
 }
 
@@ -72,7 +121,7 @@ function diceSimilarity(a, b) {
 
 /**
  * Retourne les N meilleures correspondances candidates pour un nom donné,
- * triées par score décroissant. Chaque résultat : { uuid, name, type, score }.
+ * triées par score décroissant puis par priorité de pack (payant avant SRD).
  */
 function suggestMatches(type, name, limit = 5, minScore = 0.3) {
   if (!INDEX) throw new Error("Index non construit — appelez buildIndex() d'abord");
@@ -87,7 +136,6 @@ function suggestMatches(type, name, limit = 5, minScore = 0.3) {
 
     let score = diceSimilarity(clean, rec.name);
 
-    // Recouvrement de tokens (gère les inversions "Axe, Great" / "Great Axe")
     const recTokens = new Set(slugify(rec.name).split('-').filter(Boolean));
     let shared = 0;
     for (const t of reqTokens) if (recTokens.has(t)) shared++;
@@ -98,7 +146,10 @@ function suggestMatches(type, name, limit = 5, minScore = 0.3) {
 
     if (score >= minScore) scored.push({ ...rec, score });
   }
-  return scored.sort((a, b) => b.score - a.score).slice(0, limit);
+
+  // Tri : score d'abord, priorité de pack en départage
+  scored.sort((a, b) => b.score - a.score || a.priority - b.priority);
+  return scored.slice(0, limit);
 }
 
-export { slugify, buildIndex, findRecord, suggestMatches, IGNORED_NAMES };
+export { slugify, buildIndex, findRecord, suggestMatches, IGNORED_NAMES, DEFAULT_PRIORITY_ORDER };
