@@ -48,7 +48,6 @@ function collectRequests(data) {
   for (const g of Array.isArray(data.gear) ? data.gear : []) add('gear', g.name);
   return reqs;
 }
-
 /**
  * Résout un élément : choix manuel (dialogue) > compendium (index) > item brut.
  * Retourne { source, matched }. Les échecs sont tracés dans report.
