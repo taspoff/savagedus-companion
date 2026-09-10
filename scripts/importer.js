@@ -338,6 +338,16 @@ function buildRawItem(plan) {
         type: 'shield',
         system: { parry: { value: p.parry ?? 0 }, weight: p.weight ?? 0, equipped: !!p.equipped },
       };
+    case 'armor':
+      return {
+        name: plan.name,
+        type: 'armor',
+        system: {
+          armor: { value: Number(p.armor ?? 0) || 0 },
+          weight: Number(p.weight ?? 0) || 0,
+          equipped: !!p.equipped,
+        },
+      };
     case 'weapon': {
       const prof = (Array.isArray(p.profiles) && p.profiles.length) ? p.profiles[p.activeProfile ?? 0] : {};
       return {
@@ -576,16 +586,10 @@ export async function importCharacter(data, options = {}) {
     + `${rawCount} bruts, ${removed} doublons purgés.`,
   );
 
-  // Rafraîchit la sidebar et ré-injecte le bouton d'import
-  // (le re-rendu recrée le DOM de l'en-tête et efface le bouton)
+  // Rafraîchit la sidebar (le bouton est maintenu par l'observer de main.js)
   try {
-    const { refreshImportButton } = await import('./main.js');
     ui.actors?.render(true);
-    refreshImportButton();
   } catch (err) {
     console.warn('savagedus-companion | rafraîchissement sidebar impossible:', err);
   }
-
-
-  return actor;
 }
