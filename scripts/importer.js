@@ -206,4 +206,26 @@ function slugifySafe(s) {
     .replace(/^-+|-+$/g, '');
 }
 
-export { importCharacter };
+// Extrait tous les (type, nom) demandés par l'export — pour la pré-résolution interactive
+function collectRequests(data) {
+  const reqs = [];
+  const add = (type, name) => {
+    if (name) req.push; // ← NON, voir ci-dessous
+  };
+  // (implémentation correcte :)
+  const reqs = [];
+  const add = (type, name) => {
+    if (name && !reqs.some((r) => r.type === type && r.name === name)) reqs.push({ type, name, key: `${type}:${slugifySafe(name)}` });
+  };
+  if (data.race) reqs.push({ type: 'ancestry', name: data.race, key: `ancestry:${slugifySafe(data.race)}` });
+  for (const sk of data.skills ?? []) if (!IGNORED_NAMES.has(slugifySafe(sk.name)) && (sk.dieValue ?? 4) >= 4) add('skill', sk.name);
+  for (const h of data.hindrances ?? []) add('hindrance', extractHindranceInfo(h.name, h.major).base);
+  for (const e of data.edges ?? []) add('edge', typeof e === 'string' ? e : e.name);
+  for (const p of data.powers ?? []) add('power', p.name);
+  for (const w of data.weapons ?? []) add('weapon', w.name);
+  for (const a of data.armor ?? []) if (!IGNORED_NAMES.has(slugifySafe(a.name))) add('armor', a.name);
+  for (const g of data.gear ?? []) add('gear', g.name);
+  return reqs;
+}
+
+export { importCharacter, collectRequests };
