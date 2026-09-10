@@ -2,6 +2,10 @@ import { slugify, findRecord, IGNORED_NAMES } from './matcher.js';
 
 const MODULE_ID = 'savagedus-companion';
 
+function cleanName(name) {
+  return String(name ?? '').replace(/\s*\(.*\)\s*$/, '').trim();
+}
+
 const ATTR_MAP = {
   agility: 'agility',
   smarts: 'smarts',
@@ -52,14 +56,17 @@ function collectRequests(data) {
  * Résout un élément : choix manuel (dialogue) > compendium (index) > item brut.
  * Retourne { source, matched }. Les échecs sont tracés dans report.
  */
-async function resolveItem(type, name, report, manual = {}) {
-  const key = `${type}:${slugify(String(name).replace(/\s*\(.*\)\s*$/, ''))}`;
+async function resolveItem(type, name, report, manual = {}, meta = null) {
+  const key = `${type}:${slugify(cleanName(name))}`;
 
   // 1) Choix manuel de l'utilisateur
   if (manual[key]) {
     try {
       const doc = await fromUuid(manual[key]);
-      if (doc) return { source: doc.toObject(), matched: true };
+      if (doc) {
+        if (meta) meta.resolved.push({ name: name, type: type, pack: '(choix manuel)' });
+        return { source: doc.toObject(), matched: true };
+      }
     } catch (err) {
       console.warn(`${MODULE_ID} | UUID manuel invalide ${manual[key]}`, err);
     }
@@ -70,7 +77,22 @@ async function resolveItem(type, name, report, manual = {}) {
   if (record) {
     try {
       const doc = await fromUuid(record.uuid);
-      if (doc) return { source: doc.toObject(), matched: true };
+      if (doc) {
+        if (meta && !meta.seenKeys.has(key)) {
+          meta.seenKeys.add(key);
+          meta.resolved.push({ name: record.name ?? name, type: type, pack: record.pack ?? '?' });
+          const alts = getDuplicates(key).filter((d) => d.uuid !== record.uuid);
+          if (alts.length > 0) {
+            meta.duplicates.push({
+              name: record.name ?? name,
+              type: type,
+              retainedPack: record.pack ?? '?',
+              alternatives: alts,
+            });
+          }
+        }
+        return { source: doc.toObject(), matched: true };
+      }
     } catch (err) {
       console.warn(`${MODULE_ID} | Impossible de charger ${record.uuid}`, err);
     }
@@ -79,7 +101,6 @@ async function resolveItem(type, name, report, manual = {}) {
   report.push(`${type}: ${name}`);
   return { source: null, matched: false };
 }
-
 function toDamageFormula(str) {
   if (!str) return '';
   return String(str).replace(/str\s*\+/i, '@str+').replace(/^str$/i, '@str');
