@@ -1,4 +1,4 @@
-import { buildIndex, findRecord, suggestMatches, DEFAULT_PRIORITY_ORDER } from './matcher.js';
+import { buildIndex, findRecord, suggestMatches, DEFAULT_PRIORITY_ORDER, getDuplicates } from './matcher.js';
 import { importCharacter, collectRequests } from './importer.js';
 
 const MODULE_ID = 'savagedus-companion';
@@ -112,10 +112,30 @@ async function runImport() {
     }
 
     const report = [];
-    const actor = await importCharacter(data, report, manual);
+    const meta = { resolved: [], duplicates: [] };
+    const actor = await importCharacter(data, report, manual, meta);
+
+    const resolvedRows = meta.resolved
+      .map((r) => `<li>${r.name} <em>[pack&nbsp;: ${r.pack}]</em></li>`)
+      .join('');
+    const dupRows = meta.duplicates
+      .map((dup) => {
+        const alts = dup.alternatives.map((a) => `${a.name} (${a.pack})`).join(', ');
+        return `<li><strong>${a === null ? '' : ''}${dup.name}</strong> (${dup.type}) — retenu depuis <em>${dup.retainedPack}</em> ; aussi présent dans&nbsp;: ${dup.alternatives.map((a) => `${a.name} [${a.pack}]`).join(', ')}</li>`;
+      })
+      .join('');
 
     const dialogContent = `
       <p>Acteur <strong>${actor.name}</strong> importé avec succès.</p>
+      <h4>Pack source des items résolus</h4>
+      ${meta.resolved.length ? `<ul>${resolvedRows}</ul>` : '<p>Aucun item résolu depuis un compendium.</p>'}
+      ${
+        meta.duplicates.length
+          ? `<h4>Doublons potentiels</h4>
+             <ul>${meta.duplicates.map((d) =>
+               `<li><strong>${d.name}</strong> (${d.type}) : retenu depuis <em>${d.retainedPack}</em> ; alternatives : ${d.alternatives.map((a) => `${a.name} [${a.pack}]`).join(', ')}</li>`).join('')}</ul>`
+          : '<p>Aucun doublon de compendium détecté pour les items importés.</p>'
+      }
       ${
         report.length
           ? `<p><strong>${report.length}</strong> élément(s) sans correspondance retenue (créés en items bruts) :</p>
