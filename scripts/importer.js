@@ -1,8 +1,7 @@
-import { buildIndex, findRecord, IGNORED_NAMES } from './matcher.js';
+import { slugify, findRecord, IGNORED_NAMES } from './matcher.js';
 
 const MODULE_ID = 'savagedus-companion';
 
-// Attributs : identiques dans les deux formats
 const ATTR_MAP = {
   agility: 'agility',
   smarts: 'smarts',
@@ -13,16 +12,61 @@ const ATTR_MAP = {
 
 function validateInput(data) {
   if (!data || typeof data !== 'object') throw new Error('Fichier JSON invalide');
-  const required = ['name', 'attributes'];
-  for (const f of required) {
+  for (const f of ['name', 'attributes']) {
     if (data[f] === undefined || data[f] === null) {
       throw new Error(`Champ "${f}" manquant dans l'export savaged.us`);
     }
   }
 }
 
-async function resolveItem(type, name, report) {
-  const key = `${type}: ${name}`;
+/**
+ * Extrait à plat tous les couples (type, nom) demandés par l'export,
+ * pour permettre la pré-résolution interactive avant l'import.
+ */
+function collectRequests(data) {
+  const reqs = [];
+  const add = (type, name) => {
+    if (!name) return;
+    const key = `${type}:${slugify(String(name).replace(/\s*\(.*\)\s*$/, ''))}`;
+    if (!reqs.some((r) => r.key === key)) reqs.push({ type, name, key });
+  };
+  if (data.race) add('ancestry', data.race);
+  for (const sk of Array.isArray(data.skills) ? data.skills : []) {
+    if (!IGNORED_NAMES.has(slugify(sk.name)) && (sk.dieValue ?? 4) >= 4) add('skill', sk.name);
+  }
+  for (const h of Array.isArray(data.hindrances) ? data.hindrances : []) {
+    add('hindrance', extractHindranceInfo(h.name).base);
+  }
+  for (const e of Array.isArray(data.edges) ? data.edges : []) {
+    add('edge', typeof e === 'string' ? e : e.name);
+  }
+  for (const p of Array.isArray(data.powers) ? data.powers : []) add('power', p.name);
+  for (const w of Array.isArray(data.weapons) ? data.weapons : []) add('weapon', w.name);
+  for (const a of Array.isArray(data.armor) ? data.armor : []) {
+    if (!IGNORED_NAMES.has(slugify(a.name))) add('armor', a.name);
+  }
+  for (const g of Array.isArray(data.gear) ? data.gear : []) add('gear', g.name);
+  return reqs;
+}
+
+/**
+ * Résout un élément : choix manuel (dialogue) > compendium (index) > item brut.
+ * Retourne { source, matched }. Les échecs sont tracés dans report.
+ */
+async function resolveItem(type, name, report, manual = {}) {
+  const key = `${type}:${slugify(String(name).replace(/\s*\(.*\)\s*$/, ''))}`;
+
+  // 1) Choix manuel de l'utilisateur
+  if (manual[key]) {
+    try {
+      const doc = await fromUuid(manual[key]);
+      if (doc) return { source: doc.toObject(), matched: true };
+    } catch (err) {
+      console.warn(`${MODULE_ID} | UUID manuel invalide ${manual[key]}`, err);
+    }
+  }
+
+  // 2) Résolution automatique
   const record = findRecord(type, name);
   if (record) {
     try {
@@ -32,7 +76,8 @@ async function resolveItem(type, name, report) {
       console.warn(`${MODULE_ID} | Impossible de charger ${record.uuid}`, err);
     }
   }
-  report.push(key);
+
+  report.push(`${type}: ${name}`);
   return { source: null, matched: false };
 }
 
@@ -41,17 +86,17 @@ function toDamageFormula(str) {
   return String(str).replace(/str\s*\+/i, '@str+').replace(/^str$/i, '@str');
 }
 
-function extractHindranceInfo(rawName, major) {
+function extractHindranceInfo(rawName) {
   // "Phobia (minor, claustrophobie)" -> base "Phobia", détail "claustrophobie"
-  const m = rawName.match(/^(.*?)\s*\(\s*(?:minor|major)?[a-z]*\s*,?\s*(.+?)\s*\)$/i);
+  const m = String(rawName).match(/^(.*?)\s*\(\s*[^,]*?,\s*(.+?)\s*\)$/);
   if (m && m[1] && m[2]) return { base: m[1].trim(), detail: m[2].trim() };
-  return { base: rawName.replace(/\s*\(.*\)\s*$/, '').trim(), detail: '' };
+  return { base: String(rawName).replace(/\s*\(.*\)\s*$/, '').trim(), detail: '' };
 }
 
-async function importCharacter(data, report = []) {
+async function importCharacter(data, report = [], manual = {}) {
   validateInput(data);
 
-  // Création de l'acteur NUDI — le schéma system complet est initialisé par SWADE
+  // Acteur NU — le schéma system complet est initialisé par SWADE
   const actor = await Actor.implementation.create({
     name: data.name,
     type: 'character',
@@ -61,7 +106,7 @@ async function importCharacter(data, report = []) {
   // 1) Patchs ciblés sur des chemins complets (diff-safe, schéma préservé)
   const upd = {
     'system.details.currency': data.wealth ?? 0,
-    'system.details.biography.value': `<p>${(data.background ?? '').replaceAll('\n', '<br/>')}</p>`,
+    'system.details.biography.value': `<p>${String(data.background ?? '').replaceAll('\n', '<br/>')}</p>`,
     'system.bennies.value': data.bennies ?? 3,
     'system.advances.rank': data.rankName ?? 'Novice',
     'system.pace.ground': data.paceTotal ?? 6,
@@ -75,23 +120,20 @@ async function importCharacter(data, report = []) {
     upd[`system.attributes.${key}.die.sides`] = a.dieValue ?? 4;
     upd[`system.attributes.${key}.die.modifier`] = a.mod ?? 0;
   }
-
   await actor.update(upd);
 
   // 2) Construction des items
   const items = [];
 
-  // --- Ancestry (grant automatiquement les capacités raciales) ---
   if (data.race) {
-    const { source } = await resolveItem('ancestry', data.race, report);
+    const { source } = await resolveItem('ancestry', data.race, report, manual);
     items.push(source ?? { name: data.race, type: 'ancestry', system: {} });
   }
 
-  // --- Compétences ---
   for (const sk of Array.isArray(data.skills) ? data.skills : []) {
-    if (IGNORED_NAMES.has(slugifySafe(sk.name))) continue;
-    if ((sk.dieValue ?? 4) < 4) continue; // non entraîné
-    const { source } = await resolveItem('skill', sk.name, report);
+    if (IGNORED_NAMES.has(slugify(sk.name))) continue;
+    if ((sk.dieValue ?? 4) < 4) continue;
+    const { source } = await resolveItem('skill', sk.name, report, manual);
     const d = source ?? { name: sk.name, type: 'skill', system: {} };
     d.system ??= {};
     d.system.die = { ...(d.system.die ?? {}), sides: sk.dieValue, modifier: sk.mod ?? 0 };
@@ -101,10 +143,9 @@ async function importCharacter(data, report = []) {
     items.push(d);
   }
 
-  // --- Handicaps ---
   for (const h of Array.isArray(data.hindrances) ? data.hindrances : []) {
-    const { base, detail } = extractHindranceInfo(h.name, h.major);
-    const { source } = await resolveItem('hindrance', base, report);
+    const { base, detail } = extractHindranceInfo(h.name);
+    const { source } = await resolveItem('hindrance', base, report, manual);
     const d = source ?? { name: base, type: 'hindrance', system: {} };
     d.system ??= {};
     d.name = detail ? `${base} (${detail})` : base;
@@ -113,26 +154,23 @@ async function importCharacter(data, report = []) {
     items.push(d);
   }
 
-  // --- Atouts (edges) ---
   for (const e of Array.isArray(data.edges) ? data.edges : []) {
     const name = typeof e === 'string' ? e : e.name;
     if (!name) continue;
-    const { source } = await resolveItem('edge', name, report);
+    const { source } = await resolveItem('edge', name, report, manual);
     items.push(source ?? { name, type: 'edge', system: {} });
   }
 
-  // --- Pouvoirs (powers) ---
   for (const p of Array.isArray(data.powers) ? data.powers : []) {
     if (!p?.name) continue;
-    const { source } = await resolveItem('power', p.name, report);
+    const { source } = await resolveItem('power', p.name, report, manual);
     items.push(source ?? { name: p.name, type: 'power', system: {} });
   }
 
-  // --- Armes ---
   for (const w of Array.isArray(data.weapons) ? data.weapons : []) {
     if (!w?.name) continue;
-    const profile = w.profiles?.[(w.activeProfile ?? 0)] ?? w.profiles?.[0] ?? {};
-    const { source } = await resolveItem('weapon', w.name, report);
+    const profile = w.profiles?.[w.activeProfile ?? 0] ?? w.profiles?.[0] ?? {};
+    const { source } = await resolveItem('weapon', w.name, report, manual);
     const d = source ?? { name: w.name, type: 'weapon', system: {} };
     d.system ??= {};
     Object.assign(d.system, {
@@ -150,10 +188,9 @@ async function importCharacter(data, report = []) {
     items.push(d);
   }
 
-  // --- Armures ---
   for (const a of Array.isArray(data.armor) ? data.armor : []) {
-    if (!a?.name || IGNORED_NAMES.has(slugifySafe(a.name))) continue;
-    const { source } = await resolveItem('armor', a.name, report);
+    if (!a?.name || IGNORED_NAMES.has(slugify(a.name))) continue;
+    const { source } = await resolveItem('armor', a.name, report, manual);
     const d = source ?? { name: a.name, type: 'armor', system: {} };
     d.system ??= {};
     Object.assign(d.system, {
@@ -164,22 +201,19 @@ async function importCharacter(data, report = []) {
       minStr: a.minStr ?? '',
       equipStatus: a.equipped ? 3 : 1,
     });
-    if (d.system.locations || a.coversHead !== undefined) {
-      d.system.locations = {
-        ...(d.system.locations ?? {}),
-        head: Boolean(a.coversHead),
-        torso: Boolean(a.coversTorso),
-        legs: Boolean(a.coversLegs),
-        arms: Boolean(a.coversArms),
-      };
-    }
+    d.system.locations = {
+      ...(d.system.locations ?? {}),
+      head: Boolean(a.coversHead),
+      torso: Boolean(a.coversTorso),
+      legs: Boolean(a.coversLegs),
+      arms: Boolean(a.coversArms),
+    };
     items.push(d);
   }
 
-  // --- Équipement divers ---
   for (const g of Array.isArray(data.gear) ? data.gear : []) {
     if (!g?.name) continue;
-    const { source } = await resolveItem('gear', g.name, report);
+    const { source } = await resolveItem('gear', g.name, report, manual);
     const d = source ?? { name: g.name, type: 'gear', system: {} };
     d.system ??= {};
     Object.assign(d.system, {
@@ -193,39 +227,10 @@ async function importCharacter(data, report = []) {
 
   if (items.length) await actor.createEmbeddedDocuments('Item', items);
 
-  console.info(`${MODULE_ID} | Acteur "${data.name}" importé : ${items.length} items, ${report.length} non-correspondances.`);
+  console.info(
+    `${MODULE_ID} | Acteur "${data.name}" importé : ${items.length} items, ${report.length} non-correspondances.`
+  );
   return actor;
-}
-
-function slugifySafe(s) {
-  return String(s ?? '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
-// Extrait tous les (type, nom) demandés par l'export — pour la pré-résolution interactive
-function collectRequests(data) {
-  const reqs = [];
-  const add = (type, name) => {
-    if (name) req.push; // ← NON, voir ci-dessous
-  };
-  // (implémentation correcte :)
-  const reqs = [];
-  const add = (type, name) => {
-    if (name && !reqs.some((r) => r.type === type && r.name === name)) reqs.push({ type, name, key: `${type}:${slugifySafe(name)}` });
-  };
-  if (data.race) reqs.push({ type: 'ancestry', name: data.race, key: `ancestry:${slugifySafe(data.race)}` });
-  for (const sk of data.skills ?? []) if (!IGNORED_NAMES.has(slugifySafe(sk.name)) && (sk.dieValue ?? 4) >= 4) add('skill', sk.name);
-  for (const h of data.hindrances ?? []) add('hindrance', extractHindranceInfo(h.name, h.major).base);
-  for (const e of data.edges ?? []) add('edge', typeof e === 'string' ? e : e.name);
-  for (const p of data.powers ?? []) add('power', p.name);
-  for (const w of data.weapons ?? []) add('weapon', w.name);
-  for (const a of data.armor ?? []) if (!IGNORED_NAMES.has(slugifySafe(a.name))) add('armor', a.name);
-  for (const g of data.gear ?? []) add('gear', g.name);
-  return reqs;
 }
 
 export { importCharacter, collectRequests };
