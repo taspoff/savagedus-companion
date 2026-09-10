@@ -113,9 +113,9 @@ function extractHindranceInfo(rawName) {
   return { base: String(rawName).replace(/\s*\(.*\)\s*$/, '').trim(), detail: '' };
 }
 
-async function importCharacter(data, report = [], manual = {}) {
+async function importCharacter(data, report = [], manual = {}, meta = null){
   validateInput(data);
-
+  if (meta && !meta.resolved) { meta.resolved = []; meta.duplicates = []; meta.seenKeys = new Set(); }
   // Acteur NU — le schéma system complet est initialisé par SWADE
   const actor = await Actor.implementation.create({
     name: data.name,
