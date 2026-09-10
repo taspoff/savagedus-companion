@@ -26,8 +26,8 @@ const ICON_IMPORT = '<i class="fas fa-download"></i>';
  */
 function resolveHtml(html) {
   if (!html) return null;
-  if (typeof html.querySelector === 'function') return html;      // natif v13
-  if (html[0] && typeof html[0].querySelector === 'function') return html[0]; // jQuery
+  if (typeof html.querySelector === 'function') return html;
+  if (html[0] && typeof html[0].querySelector === 'function') return html[0];
   return null;
 }
 
@@ -45,7 +45,6 @@ function pickJsonFile() {
       window.removeEventListener('focus', onFocusWindow, true);
     };
     const onFocusWindow = () => {
-      // Fermeture du sélecteur sans choix : résout null après un délai court
       setTimeout(() => {
         if (document.body.contains(input)) { cleanup(); resolve(null); }
       }, 500);
@@ -111,12 +110,26 @@ function injectImportButton(html) {
     ?? html.querySelector('.directory-header')
     ?? html.querySelector('header')
     ?? (html.classList?.contains('action-buttons') ? html : null);
-  console.debug('savagedus-companion | injectImportButton, header =', !!header);
   if (!header) return;
   if (header.querySelector('.savagedus-import')) return; // déjà injecté
   header.insertAdjacentHTML('beforeend', IMPORT_BUTTON_HTML);
   header.querySelector('.savagedus-import')
     .addEventListener('click', onImportClick);
+}
+
+/**
+ * Trouve le conteneur de boutons de l'onglet Acteurs, quel que soit
+ * l'id réel du répertoire dans ce build de Foundry.
+ */
+function findActionHost() {
+  return document.querySelector('#actors .action-buttons')
+    ?? document.querySelector('header.directory-header .action-buttons')
+    ?? document.querySelector('.directory-header .action-buttons');
+}
+
+function tryInject() {
+  const host = findActionHost();
+  if (host) injectImportButton(host.parentElement ?? host);
 }
 
 async function onImportClick(event) {
@@ -131,13 +144,11 @@ async function onImportClick(event) {
     ui.notifications.error(`${MODULE_ID} | fichier JSON illisible.`);
     return;
   }
-  if (!data) return; // sélection annulée
+  if (!data) return;
 
   try {
     const actor = await importCharacter(data);
-    ui.notifications.info(
-      `${MODULE_ID} | ${actor.name} importé avec succès.`,
-    );
+    ui.notifications.info(`${MODULE_ID} | ${actor.name} importé avec succès.`);
   } catch (err) {
     console.error(`${MODULE_ID} | import échoué:`, err);
     ui.notifications.error(`${MODULE_ID} | import échoué (voir console).`);
@@ -145,37 +156,26 @@ async function onImportClick(event) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Amorçage                                                            */
+/* ------------------------------------------------------------------ */
+
 Hooks.once('init', () => {
   registerSettings();
 });
 
-/** Injecte le bouton dans l'onglet Acteurs si le DOM existe. */
-function tryInject() {
-  const root = document.querySelector('#actors');
-  console.debug('savagedus-companion | tryInject appelé');
-  if (root) injectImportButton(root);
-}
-
-// Injection principale : au chargement du monde, le DOM existe déjà
 Hooks.once('ready', () => {
   if (!game.modules.get(MODULE_ID)?.active) return;
-  tryInject();
   console.log(`${MODULE_ID} | prêt (Foundry ${game.version})`);
-  console.log('SDC-DEBUG | ready tiré, observer va démarrer');
-  ...
-});
-});
 
-// Repli : si l'onglet est re-rendu, on ré-injecte (le garde
-// anti-double-injection de injectImportButton empêche les doublons)
-for (const hook of ['renderActorsTab', 'renderActorsDirectory', 'renderSidebar']) {
-  Hooks.on(hook, (app, html) => {
-    const el = resolveHtml(html) ?? document.querySelector('#actors');
-    if (el) injectImportButton(el);
+  // Injection initiale
+  tryInject();
+
+  // Surveillance permanente : si l'en-tête de l'onglet Acteurs est
+  // recréé (re-rendu, import, changement d'onglet), on ré-injecte.
+  // Observer sur document.body : indépendant des ids/classes du build.
+  const observer = new MutationObserver(() => {
+    if (document.querySelector('.savagedus-import')) return;
+    tryInject();
   });
-}
-// En bas du fichier, rendre accessible à importer.js :
-export function refreshImportButton() {
-  const root = document.querySelector('#actors');
-  if (root) injectImportButton(root);
-}
+  observer.observe(document.body, { childList: true, subtree: true });
+});
