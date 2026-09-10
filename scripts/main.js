@@ -169,3 +169,8 @@ for (const hook of ['renderActorsTab', 'renderActorsDirectory', 'renderSidebar']
     if (el) injectImportButton(el);
   });
 }
+// En bas du fichier, rendre accessible à importer.js :
+export function refreshImportButton() {
+  const root = document.querySelector('#actors');
+  if (root) injectImportButton(root);
+}
