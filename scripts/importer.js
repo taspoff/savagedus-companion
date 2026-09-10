@@ -1,256 +1,587 @@
-import { slugify, findRecord, IGNORED_NAMES } from './matcher.js';
+/**
+ * savagedus-companion — scripts/importer.js
+ *
+ * Import d'un personnage exporté depuis savaged.us vers un acteur SWADE.
+ * Stratégie : acteur créé « nu » puis patché par chemins complets,
+ * items résolus depuis les compendiums avec arbitrage interactif.
+ */
+'use strict';
 
-const MODULE_ID = 'savagedus-companion';
+import {
+  buildIndex,
+  findRecord,
+  suggestMatches,
+  getDuplicates,
+  slugify,
+  stripParentheses,
+  IGNORED_NAMES,
+} from './matcher.js';
 
-function cleanName(name) {
-  return String(name ?? '').replace(/\s*\(.*\)\s*$/, '').trim();
+/* ------------------------------------------------------------------ */
+/* Petits utilitaires                                                  */
+/* ------------------------------------------------------------------ */
+
+/** "d6" -> 6 ; renvoie 0 si non parsable. */
+function dieSides(value) {
+  const m = /^d(\d+)/i.exec(String(value ?? '').trim());
+  return m ? Number(m[1]) : 0;
 }
 
-const ATTR_MAP = {
-  agility: 'agility',
-  smarts: 'smarts',
-  spirit: 'spirit',
-  strength: 'strength',
-  vigor: 'vigor',
-};
-
-function validateInput(data) {
-  if (!data || typeof data !== 'object') throw new Error('Fichier JSON invalide');
-  for (const f of ['name', 'attributes']) {
-    if (data[f] === undefined || data[f] === null) {
-      throw new Error(`Champ "${f}" manquant dans l'export savaged.us`);
-    }
-  }
+/** "1d4", "2d8" renvoyés tels quels ; "d10" -> "1d10". */
+function normalizeDieString(str) {
+  const s = String(str ?? '').trim();
+  return /^\d*d\d+/.test(s) && !/^\d/.test(s) ? `1${s}` : s;
 }
 
 /**
- * Extrait à plat tous les couples (type, nom) demandés par l'export,
- * pour permettre la pré-résolution interactive avant l'import.
+ * Formule de dégâts savaged.us -> formule SWADE :
+ * "Str+d10" -> "@str+1d10", "2d8" -> "2d8".
  */
-function collectRequests(data) {
-  const reqs = [];
-  const add = (type, name) => {
-    if (!name) return;
-    const key = `${type}:${slugify(String(name).replace(/\s*\(.*\)\s*$/, ''))}`;
-    if (!reqs.some((r) => r.key === key)) reqs.push({ type, name, key });
+export function toDamageFormula(damage) {
+  let s = String(damage ?? '').trim();
+  if (!s) return '';
+  s = s.replace(/\bstr\b/gi, '@str');
+  s = s.split('+').map(normalizeDieString).join('+');
+  return s;
+}
+
+/**
+ * "Phobia (minor, claustrophobie)" -> { base: 'Phobia', major: false, detail: 'claustrophobie' }
+ * Retourne null si le format ne colle pas.
+ */
+export function extractHindranceInfo(name) {
+  const m = /^(.+?)\s*\((major|minor)(?:,\s*(.+))?\)\s*$/i.exec(String(name ?? '').trim());
+  if (!m) return null;
+  return {
+    base: m[1].trim(),
+    major: m[2].toLowerCase() === 'major',
+    detail: (m[3] ?? '').trim(),
   };
-  if (data.race) add('ancestry', data.race);
-  for (const sk of Array.isArray(data.skills) ? data.skills : []) {
-    if (!IGNORED_NAMES.has(slugify(sk.name)) && (sk.dieValue ?? 4) >= 4) add('skill', sk.name);
-  }
-  for (const h of Array.isArray(data.hindrances) ? data.hindrances : []) {
-    add('hindrance', extractHindranceInfo(h.name).base);
-  }
-  for (const e of Array.isArray(data.edges) ? data.edges : []) {
-    add('edge', typeof e === 'string' ? e : e.name);
-  }
-  for (const p of Array.isArray(data.powers) ? data.powers : []) add('power', p.name);
-  for (const w of Array.isArray(data.weapons) ? data.weapons : []) add('weapon', w.name);
-  for (const a of Array.isArray(data.armor) ? data.armor : []) {
-    if (!IGNORED_NAMES.has(slugify(a.name))) add('armor', a.name);
-  }
-  for (const g of Array.isArray(data.gear) ? data.gear : []) add('gear', g.name);
-  return reqs;
 }
+
+/** Noms d'armes dupliqués en armes-fantômes par savaged.us pour les pouvoirs. */
+function collectPowerWeaponNames(data) {
+  const out = new Set();
+  for (const ab of Array.isArray(data.abs) ? data.abs : []) {
+    for (const p of Array.isArray(ab.powers) ? ab.powers : []) {
+      if (p?.name) out.add(p.name);
+      if (p?.customName) out.add(p.customName);
+    }
+  }
+  return out;
+}
+
+/** Aplatit récursivement gear[].contains.{gear,weapons,armor,shields}. */
+export function flattenGear(list, out = [], parent = null) {
+  for (const g of Array.isArray(list) ? list : []) {
+    if (!g?.name || IGNORED_NAMES.has(slugify(g.name))) continue;
+    const entry = { kind: 'gear', name: g.name, payload: g, parent };
+    out.push(entry);
+    const c = g.contains ?? {};
+    flattenGear(c.gear ?? [], out, g.name);
+    for (const w of Array.isArray(c.weapons) ? c.weapons : []) {
+      if (w?.name) out.push({ kind: 'weapon', name: w.name, payload: w, parent: g.name });
+    }
+    for (const a of Array.isArray(c.armor) ? c.armor : []) {
+      if (a?.name && !IGNORED_NAMES.has(slugify(a.name))) {
+        out.push({ kind: 'armor', name: a.name, payload: a, parent: g.name });
+      }
+    }
+    for (const s of Array.isArray(c.shields) ? c.shields : []) {
+      if (s?.name) out.push({ kind: 'shield', name: s.name, payload: s, parent: g.name });
+    }
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* Scan : constitution du plan d'import                                */
+/* ------------------------------------------------------------------ */
+
 /**
- * Résout un élément : choix manuel (dialogue) > compendium (index) > item brut.
- * Retourne { source, matched }. Les échecs sont tracés dans report.
+ * Analyse l'export et retourne la liste des entrées à importer :
+ * [{ kind, name (clé de résolution), payload }] — `payload` étant la
+ * donnée brute savaged.us dont chaque builder tirera les détails.
  */
-async function resolveItem(type, name, report, manual = {}, meta = null) {
-  const key = `${type}:${slugify(cleanName(name))}`;
+export function collectRequests(data) {
+  const powerWeapons = collectPowerWeaponNames(data);
+  const plans = [];
 
-  // 1) Choix manuel de l'utilisateur
-  if (manual[key]) {
-    try {
-      const doc = await fromUuid(manual[key]);
-      if (doc) {
-        if (meta) meta.resolved.push({ name: name, type: type, pack: '(choix manuel)' });
-        return { source: doc.toObject(), matched: true };
-      }
-    } catch (err) {
-      console.warn(`${MODULE_ID} | UUID manuel invalide ${manual[key]}`, err);
+  // Ancestry (la compétence raciale/grants sont gérés par l'item lui-même)
+  if (data.race && !IGNORED_NAMES.has(slugify(data.race))) {
+    plans.push({ kind: 'ancestry', name: data.race, payload: null });
+  }
+
+  // Atouts
+  for (const e of Array.isArray(data.edges) ? data.edges : []) {
+    const clean = stripParentheses(e.name);
+    if (!clean) continue;
+    plans.push({ kind: 'edge', name: clean, payload: e });
+  }
+
+  // Handicaps (le format "Nom (major, détail)") est écorché à la clé
+  for (const h of Array.isArray(data.hindrances) ? data.hindrances : []) {
+    const info = extractHindranceInfo(h.name);
+    const base = info ? info.base : stripParentheses(h.name);
+    if (!base) continue;
+    plans.push({ kind: 'hindrance', name: base, payload: h, hindranceInfo: info });
+  }
+
+  // Pouvoirs : hébergés dans abs[].powers[], matchés sur originalName
+  for (const ab of Array.isArray(data.abs) ? data.abs : []) {
+    for (const p of Array.isArray(ab.powers) ? ab.powers : []) {
+      const bookName = p?.originalName || p?.name;
+      if (!bookName) continue;
+      plans.push({ kind: 'power', name: stripParentheses(bookName), payload: p });
     }
   }
 
-  // 2) Résolution automatique
-  const record = findRecord(type, name);
-  if (record) {
+  // Capacités spéciales hors raciales (les raciales sont granted par l'ancestry)
+  for (const a of Array.isArray(data.abilities) ? data.abilities : []) {
+    if (!a?.name) continue; // entrée de synthèse sans nom : ignorée
+    if (a.from === 'Racial') continue;
+    plans.push({ kind: 'ability', name: a.name, payload: a });
+  }
+
+  // Armures (hors "(Unarmored)")
+  for (const ar of Array.isArray(data.armor) ? data.armor : []) {
+    if (!ar?.name || IGNORED_NAMES.has(slugify(ar.name))) continue;
+    plans.push({ kind: 'armor', name: stripParentheses(ar.name), payload: ar });
+  }
+
+  // Boucliers
+  for (const s of Array.isArray(data.shields) ? data.shields : []) {
+    if (!s?.name) continue;
+    plans.push({ kind: 'shield', name: stripParentheses(s.name), payload: s });
+  }
+
+  // Armes : on saute Unarmed et les armes-fantômes de pouvoirs
+  for (const w of Array.isArray(data.weapons) ? data.weapons : []) {
+    if (!w?.name || IGNORED_NAMES.has(slugify(w.name))) continue;
+    const isPowerWeapon = powerWeapons.has(w.name)
+      || String(w.notes ?? '').startsWith('Power')
+      || (Array.isArray(w.profiles) && w.profiles.some((pr) => pr?.skillName === 'Arcane Skill'));
+    if (isPowerWeapon) continue;
+    plans.push({ kind: 'weapon', name: stripParentheses(w.name), payload: w });
+  }
+
+  // Équipement (aplatissement récursif des conteneurs)
+  flattenGear(data.gear ?? []);
+
+  return { plans, gearPlans: flattenGear(data.gear ?? []) };
+}
+
+/* ------------------------------------------------------------------ */
+/* Arbitrage interactif des non-correspondances                        */
+/* ------------------------------------------------------------------ */
+
+const RAW_CHOICE = '__RAW__';
+
+function planKey(kind, name) {
+  return `${kind}:${slugify(name)}`;
+}
+
+/**
+ * Affiche le dialogue d'arbitrage pour les entrées sans correspondance
+ * déterministe. Retourne une map `${kind}:${slug}` -> uuid ou RAW_CHOICE.
+ * Utilise DialogV2 (Foundry v13) instancié puis rendu (pas de .wait()).
+ */
+async function promptArbitration(index, pending) {
+  const manual = {};
+
+  const renderRow = (plan, suggestions) => {
+    const uid = planKey(plan.kind, plan.name);
+    const optionsHtml = [
+      `<option value="${RAW_CHOICE}">— Créer un item brut « ${plan.name} » —</option>`,
+      ...suggestions.map((s) => (
+        `<option value="${s.uuid}"${s.preselect ? ' selected' : ''}>`
+        + `${s.name} (${Math.round(s.score * 100)} %) — ${s.packLabel}`
+        + '</option>'
+      )),
+    ].join('');
+    return (
+      `<div class="form-group">
+        <label style="display:flex;align-items:center;gap:6px;">
+          <strong>${plan.name}</strong>
+          <em style="color:grey;">(${plan.kind})</em>
+        </label>
+        <select data-plan="${uid}" style="width:100%;">${optionsHtml}</select>
+      </div>`
+    );
+  };
+
+  // Déduplication des plans identiques (même clé) pour une seule question
+  const byKey = new Map();
+  for (const plan of pending) {
+    const k = planKey(plan.kind, plan.name);
+    if (!byKey.has(k)) byKey.set(k, plan);
+  }
+  const uniquePlans = [...byKey.values()];
+  if (!uniquePlans.length) return manual;
+
+  const body = `
+    <form>
+      <p>Certaines entrées n'ont pas trouvé de correspondance certaine dans les compendiums.
+      Choisissez la meilleure correspondance, ou conservez un item brut :</p>
+      ${uniquePlans.map((plan) => renderRow(plan, suggestMatches(index, { type: plan.kind, name: plan.name }))).join('<hr/>')}
+    </form>`;
+
+  return new Promise((resolve) => {
+    const dialog = new foundry.applications.api.DialogV2({
+      window: { title: 'savaged.us — Arbitrage des correspondances' },
+      content: body,
+      buttons: [
+        {
+          action: 'confirm',
+          icon: 'fas fa-check',
+          label: 'Importer',
+          callback: (event, button) => {
+            const form = button.form ?? event.target.closest('dialog')?.querySelector('form')
+              ?? button.element?.querySelector?.('form');
+            if (!form) { resolve(manual); return; }
+            for (const sel of form.querySelectorAll('select[data-plan]')) {
+              manual[sel.dataset.plan] = sel.value;
+            }
+            resolve(manual);
+          },
+        },
+      ],
+      close: () => resolve(manual),
+      modal: true,
+    });
+    dialog.render(true);
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Résolution d'une entrée                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Résout un plan : choix manuel > compendium déterministe > item brut.
+ * Remplit `report` et retourne l'objet document source (toObject) ou un
+ * document brut de substitution.
+ */
+async function resolvePlan(index, plan, manual, report) {
+  const key = planKey(plan.kind, plan.name);
+
+  // 1. Choix manuel issu du dialogue
+  const manualChoice = manual[key];
+  if (manualChoice && manualChoice !== RAW_CHOICE) {
     try {
-      const doc = await fromUuid(record.uuid);
+      const doc = await fromUuid(manualChoice);
       if (doc) {
-        if (meta && !meta.seenKeys.has(key)) {
-          meta.seenKeys.add(key);
-          meta.resolved.push({ name: record.name ?? name, type: type, pack: record.pack ?? '?' });
-          const alts = getDuplicates(key).filter((d) => d.uuid !== record.uuid);
-          if (alts.length > 0) {
-            meta.duplicates.push({
-              name: record.name ?? name,
-              type: type,
-              retainedPack: record.pack ?? '?',
-              alternatives: alts,
-            });
-          }
+        report.resolved.push({ name: plan.name, kind: plan.kind, source: 'manuel', pack: doc.pack?.metadata?.label ?? '?' });
+        return doc.toObject();
+      }
+    } catch (err) {
+      console.warn('savagedus-companion | UUID manuel introuvable:', manualChoice, err);
+    }
+  }
+
+  // 2. Compendium déterministe (cascade alias > nom complet > écorché)
+  const rec = findRecord(index, { type: plan.kind, name: plan.name });
+  if (rec) {
+    let doc = null;
+    try {
+      doc = await fromUuid(rec.uuid);
+    } catch (err) {
+      console.warn('savagedus-companion | fromUuid échoué:', rec.uuid, err);
+    }
+    if (doc) {
+      const dups = getDuplicates(index, plan.name)
+        .map((d) => d.packLabel)
+        .filter((l) => l !== rec.packLabel);
+      report.resolved.push({ name: plan.name, kind: plan.kind, source: rec.packLabel, duplicates: dups });
+      return doc.toObject();
+    }
+  }
+
+  // 3. Item brut
+  report.raw.push({ name: plan.name, kind: plan.kind });
+  return null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Builders : transformation d'un plan en item SWADE                   */
+/* ------------------------------------------------------------------ */
+
+function buildRawItem(plan) {
+  const p = plan.payload ?? {};
+  switch (plan.kind) {
+    case 'edge':
+      return { name: plan.name, type: 'edge', system: { description: p.description ?? '' } };
+    case 'hindrance':
+      return {
+        name: plan.name,
+        type: 'hindrance',
+        system: {
+          description: p.description ?? '',
+          ...(plan.hindranceInfo ? { major: plan.hindranceInfo.major } : {}),
+        },
+      };
+    case 'ability':
+      return { name: plan.name, type: 'ability', system: { description: p.description ?? '' } };
+    case 'armor':
+      return {
+        name: plan.name,
+        type: 'armor',
+        system: {
+          armor: { value: p.armor ?? 0 },
+          weight: p.weight ?? 0,
+          equipped: !!p.equipped,
+        },
+      };
+    case 'shield':
+      return {
+        name: plan.name,
+        type: 'shield',
+        system: { parry: { value: p.parry ?? 0 }, weight: p.weight ?? 0, equipped: !!p.equipped },
+      };
+    case 'weapon': {
+      const prof = (Array.isArray(p.profiles) && p.profiles.length) ? p.profiles[p.activeProfile ?? 0] : {};
+      return {
+        name: plan.name,
+        type: 'weapon',
+        system: {
+          damage: toDamageFormula(prof.damage ?? p.damage ?? ''),
+          range: p.range ?? prof.range ?? '',
+          ...(p.ap ? { ap: p.ap } : {}),
+          weight: p.weight ?? 0,
+          equipped: !!p.equipped,
+          notes: p.notes ?? '',
+        },
+      };
+    }
+    case 'power':
+      return { name: plan.payload?.customName ?? plan.name, type: 'power', system: {} };
+    case 'gear':
+      return {
+        name: plan.name,
+        type: 'gear',
+        system: { weight: p.weight ?? 0, quantity: p.quantity ?? 1, equipped: !!p.equipped },
+      };
+    default:
+      return { name: plan.name, type: 'gear', system: {} };
+  }
+}
+
+/** Applique les personnalisations par type après résolution compendium. */
+function decorate(doc, plan) {
+  const p = plan.payload ?? {};
+  switch (plan.kind) {
+    case 'power': {
+      doc.name = p.customName || doc.name || plan.name;
+      const trapping = p.customDescription || p.description || '';
+      if (trapping) {
+        doc.system = doc.system ?? {};
+        doc.system.notes = doc.system.notes
+          ? `${doc.system.notes}<hr/><p><em>${trapping}</em></p>`
+          : trapping;
+        if (typeof doc.system.description === 'string' && doc.system.description) {
+          doc.system.description += `<hr/><p><em>${trapping}</em></p>`;
         }
-        return { source: doc.toObject(), matched: true };
       }
-    } catch (err) {
-      console.warn(`${MODULE_ID} | Impossible de charger ${record.uuid}`, err);
+      break;
     }
+    case 'hindrance':
+      if (plan.hindranceInfo) {
+        doc.system = doc.system ?? {};
+        doc.system.major = plan.hindranceInfo.major;
+        if (plan.hindranceInfo.detail) {
+          doc.system.description = `${doc.system.description ?? ''}<p><em>${plan.hindranceInfo.detail}</em></p>`;
+        }
+      }
+      break;
+    case 'armor':
+      doc.system = doc.system ?? {};
+      doc.system.equipped = !!p.equipped;
+      break;
+    case 'weapon':
+      doc.system = doc.system ?? {};
+      doc.system.equipped = !!p.equipped;
+      doc.system.damage = doc.system.damage || toDamageFormula(p.damage ?? '');
+      break;
+    case 'shield':
+      doc.system = doc.system ?? {};
+      doc.system.equipped = !!p.equipped;
+      break;
+    case 'gear':
+      doc.system = doc.system ?? {};
+      doc.system.equipped = !!p.equipped;
+      doc.system.quantity = p.quantity ?? 1;
+      break;
+    default:
+      break;
+  }
+  return doc;
+}
+
+/* ------------------------------------------------------------------ */
+/* Déduplication post-import                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * SWADE 6.x accorde automatiquement certaines actions/compétences quand
+ * un item compendium est créé. Cette passe retire les doublons, en
+ * conservant l'item ayant le dé (ou les données) le plus élevé.
+ */
+export function deduplicateItems(actor) {
+  const seen = new Map();
+  const toDelete = [];
+  for (const item of actor.items) {
+    const key = `${item.type}:${slugify(item.name)}`;
+    const prev = seen.get(key);
+    if (!prev) {
+      seen.set(key, item);
+      continue;
+    }
+    const side = (it) => (it.system?.die?.sides ?? 0) + (it.system?.die?.modifier ?? 0);
+    const keep = side(item) >= side(prev) ? item : prev;
+    const drop = keep === item ? prev : item;
+    seen.set(key, keep);
+    toDelete.push(drop.id);
+  }
+  if (toDelete.length) {
+    actor.deleteEmbeddedDocuments('Item', toDelete);
+    console.log('savagedus-companion | doublons supprimés:', toDelete.length);
+  }
+  return toDelete.length;
+}
+
+/* ------------------------------------------------------------------ */
+/* Import principal                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Importe un export savaged.us en acteur SWADE.
+ * @param {object} data export JSON brut savaged.us
+ * @param {object} [options] { skipDialog, manual } pour rejouer un import
+ * @returns {Promise<Actor>}
+ */
+export async function importCharacter(data, options = {}) {
+  if (!data?.name || typeof data !== 'object') {
+    ui.notifications.error('savagedus-companion | fichier invalide (personnage sans nom).');
+    throw new Error('Export savaged.us invalide.');
   }
 
-  report.push(`${type}: ${name}`);
-  return { source: null, matched: false };
-}
-function toDamageFormula(str) {
-  if (!str) return '';
-  return String(str).replace(/str\s*\+/i, '@str+').replace(/^str$/i, '@str');
-}
+  const index = await buildIndex();
+  const { plans, gearPlans } = collectRequests(data);
+  const allPlans = [...plans, ...gearPlans];
 
-function extractHindranceInfo(rawName) {
-  // "Phobia (minor, claustrophobie)" -> base "Phobia", détail "claustrophobie"
-  const m = String(rawName).match(/^(.*?)\s*\(\s*[^,]*?,\s*(.+?)\s*\)$/);
-  if (m && m[1] && m[2]) return { base: m[1].trim(), detail: m[2].trim() };
-  return { base: String(rawName).replace(/\s*\(.*\)\s*$/, '').trim(), detail: '' };
-}
+  const report = { resolved: [], raw: [], pendingKeys: new Set() };
 
-async function importCharacter(data, report = [], manual = {}, meta = null){
-  validateInput(data);
-  if (meta && !meta.resolved) { meta.resolved = []; meta.duplicates = []; meta.seenKeys = new Set(); }
-  // Acteur NU — le schéma system complet est initialisé par SWADE
-  const actor = await Actor.implementation.create({
+  // Étape 1 : identifier les entrées sans correspondance déterministe
+  const pending = [];
+  const seenPending = new Set();
+  for (const plan of allPlans) {
+    const key = planKey(plan.kind, plan.name);
+    if (options.manual?.[key]) continue; // déjà arbitré manuellement
+    if (findRecord(index, { type: plan.kind, name: plan.name })) continue;
+    if (seenPending.has(key)) continue;
+    seenPending.add(key);
+    pending.push(plan);
+  }
+
+  // Étape 2 : arbitrage interactif
+  const manual = options.skipDialog
+    ? {}
+    : await promptArbitration(index, pending);
+
+  // Étape 3 : création de l'acteur « nu »
+  const actor = await Actor.create({
     name: data.name,
     type: 'character',
+    img: data.image || undefined,
+    ...(data.imageToken ? { prototypeToken: { texture: { src: data.imageToken } } } : {}),
   });
-  if (!actor) throw new Error(`Impossible de créer l'acteur "${data.name}"`);
 
-  // 1) Patchs ciblés sur des chemins complets (diff-safe, schéma préservé)
-  const upd = {
-    'system.details.currency': data.wealth ?? 0,
-    'system.details.biography.value': `<p>${String(data.background ?? '').replaceAll('\n', '<br/>')}</p>`,
-    'system.bennies.value': data.bennies ?? 3,
-    'system.advances.rank': data.rankName ?? 'Novice',
-    'system.pace.ground': data.paceTotal ?? 6,
-  };
-  if (typeof data.woundsMax === 'number') upd['system.wounds.max'] = data.woundsMax;
-  if (typeof data.fatigueMax === 'number') upd['system.fatigue.max'] = data.fatigueMax;
-
-  for (const a of Array.isArray(data.attributes) ? data.attributes : []) {
-    const key = ATTR_MAP[String(a.name).toLowerCase()];
-    if (!key) continue;
-    upd[`system.attributes.${key}.die.sides`] = a.dieValue ?? 4;
-    upd[`system.attributes.${key}.die.modifier`] = a.mod ?? 0;
+  // Étape 4 : patch par chemins complets — JAMAIS de `system` partiel
+  const updates = {};
+  for (const attr of Array.isArray(data.attributes) ? data.attributes : []) {
+    const sides = dieSides(attr.value);
+    if (!sides) continue;
+    updates[`system.attributes.${attr.name}.die.sides`] = sides;
+    if (attr.mod) updates[`system.attributes.${attr.name}.die.modifier`] = attr.mod;
   }
-  await actor.update(upd);
+  if (Number.isFinite(data.bennies)) {
+    updates['system.bennies.value'] = data.bennies;
+    updates['system.bennies.max'] = data.benniesMax ?? data.bennies;
+  }
+  if (data.wildcard !== undefined) updates['system.wildcard'] = !!data.wildcard;
+  if (data.rankName) updates['system.rank'] = data.rankName.toLowerCase();
+  // Pace : paceBase seulement (paceTotal inclut les mods raciaux déjà
+  // portés par l'item ancestry — éviter le double comptage)
+  if (Number.isFinite(data.paceBase)) updates['system.stats.pace.value'] = data.paceBase;
+  if (data.background) {
+    updates['system.details.biography.value'] = data.background;
+  }
+  if (data.age) updates['system.details.age'] = String(data.age);
+  if (data.gender) updates['system.details.gender'] = data.gender;
+  if (data.wealthFormatted) updates['system.details.wealth'] = data.wealthFormatted;
+  if (Object.keys(updates).length) await actor.update(updates);
 
-  // 2) Construction des items
+  // Étape 5 : résolution et constitution des items
   const items = [];
-
-  if (data.race) {
-    const { source } = await resolveItem('ancestry', data.race, report, manual,meta);
-    items.push(source ?? { name: data.race, type: 'ancestry', system: {} });
+  for (const plan of allPlans) {
+    let doc = await resolvePlan(index, plan, { ...options.manual, ...manual }, report);
+    if (!doc) doc = buildRawItem(plan);
+    else doc = decorate(doc, plan);
+    if (doc?.name) items.push(doc);
   }
 
+  // Compétences : items bruts directs (valeur + attribut lié)
   for (const sk of Array.isArray(data.skills) ? data.skills : []) {
-    if (IGNORED_NAMES.has(slugify(sk.name))) continue;
-    if ((sk.dieValue ?? 4) < 4) continue;
-    const { source } = await resolveItem('skill', sk.name, report, manual,meta);
-    const d = source ?? { name: sk.name, type: 'skill', system: {} };
-    d.system ??= {};
-    d.system.die = { ...(d.system.die ?? {}), sides: sk.dieValue, modifier: sk.mod ?? 0 };
-    if (sk.attribute && ATTR_MAP[String(sk.attribute).toLowerCase()]) {
-      d.system.attribute = ATTR_MAP[String(sk.attribute).toLowerCase()];
-    }
-    items.push(d);
-  }
-
-  for (const h of Array.isArray(data.hindrances) ? data.hindrances : []) {
-    const { base, detail } = extractHindranceInfo(h.name);
-    const { source } = await resolveItem('hindrance', base, report, manual,meta);
-    const d = source ?? { name: base, type: 'hindrance', system: {} };
-    d.system ??= {};
-    d.name = detail ? `${base} (${detail})` : base;
-    d.system.major = Boolean(h.major);
-    d.system.severity = h.major ? 'major' : 'minor';
-    items.push(d);
-  }
-
-  for (const e of Array.isArray(data.edges) ? data.edges : []) {
-    const name = typeof e === 'string' ? e : e.name;
-    if (!name) continue;
-    const { source } = await resolveItem('edge', name, report, manual,meta);
-    items.push(source ?? { name, type: 'edge', system: {} });
-  }
-
-  for (const p of Array.isArray(data.powers) ? data.powers : []) {
-    if (!p?.name) continue;
-    const { source } = await resolveItem('power', p.name, report, manual,meta);
-    items.push(source ?? { name: p.name, type: 'power', system: {} });
-  }
-
-  for (const w of Array.isArray(data.weapons) ? data.weapons : []) {
-    if (!w?.name) continue;
-    const profile = w.profiles?.[w.activeProfile ?? 0] ?? w.profiles?.[0] ?? {};
-    const { source } = await resolveItem('weapon', w.name, report, manual,meta);
-    const d = source ?? { name: w.name, type: 'weapon', system: {} };
-    d.system ??= {};
-    Object.assign(d.system, {
-      quantity: w.quantity ?? 1,
-      weight: w.weight ?? 0,
-      price: w.cost ?? 0,
-      damage: toDamageFormula(profile.damage),
-      range: profile.range && profile.range !== 'Melee' ? profile.range : '',
-      ap: profile.ap ?? 0,
-      rof: Number(profile.rof) || 0,
-      minStr: w.minStr ?? '',
-      equipStatus: w.equipped ? 3 : 1,
-      notes: profile.notes ?? '',
+    if (!sk?.name || IGNORED_NAMES.has(slugify(sk.name))) continue;
+    const sides = dieSides(sk.value);
+    if (sides < 4) continue; // non entraînée
+    items.push({
+      name: sk.name,
+      type: 'skill',
+      system: {
+        attribute: sk.attribute || '',
+        die: { sides, ...(sk.mod ? { modifier: sk.mod } : {}) },
+      },
     });
-    items.push(d);
   }
 
-  for (const a of Array.isArray(data.armor) ? data.armor : []) {
-    if (!a?.name || IGNORED_NAMES.has(slugify(a.name))) continue;
-    const { source } = await resolveItem('armor', a.name, report, manual,meta);
-    const d = source ?? { name: a.name, type: 'armor', system: {} };
-    d.system ??= {};
-    Object.assign(d.system, {
-      armor: a.armor ?? 0,
-      quantity: a.quantity ?? 1,
-      weight: a.weight ?? 0,
-      price: a.cost ?? 0,
-      minStr: a.minStr ?? '',
-      equipStatus: a.equipped ? 3 : 1,
-    });
-    d.system.locations = {
-      ...(d.system.locations ?? {}),
-      head: Boolean(a.coversHead),
-      torso: Boolean(a.coversTorso),
-      legs: Boolean(a.coversLegs),
-      arms: Boolean(a.coversArms),
-    };
-    items.push(d);
+  if (items.length) {
+    const created = await actor.createEmbeddedDocuments('Item', items);
+    // Post-traitement : équips et flags complémentaires éventuels
+    const eqUpdates = created
+      .filter((it) => it.system?.equipped !== undefined && typeof it.system.equipped === 'boolean')
+      .map((it) => ({ _id: it.id, 'system.equipped': it.system.equipped }));
+    if (eqUpdates.length) await actor.updateEmbeddedDocuments('Item', eqUpdates);
   }
 
-  for (const g of Array.isArray(data.gear) ? data.gear : []) {
-    if (!g?.name) continue;
-    const { source } = await resolveItem('gear', g.name, report, manual,meta);
-    const d = source ?? { name: g.name, type: 'gear', system: {} };
-    d.system ??= {};
-    Object.assign(d.system, {
-      quantity: g.quantity ?? 1,
-      weight: g.weight ?? 0,
-      price: g.cost ?? 0,
-      notes: g.notes ?? '',
-    });
-    items.push(d);
-  }
+  // Étape 6 : dédoublonnage post-grants SWADE 6.x
+  const removed = deduplicateItems(actor);
 
-  if (items.length) await actor.createEmbeddedDocuments('Item', items);
-
-  console.info(
-    `${MODULE_ID} | Acteur "${data.name}" importé : ${items.length} items, ${report.length} non-correspondances.`
+  // Étape 7 : récapitulatif
+  const resolvedCount = report.resolved.length;
+  const rawCount = report.raw.length;
+  console.log(
+    `savagedus-companion | ${data.name} importé : ${items.length + rawCount} items `
+    + `(${resolvedCount} compendium, ${rawCount} bruts), ${removed} doublons purgés.`,
   );
+  if (report.raw.length) {
+    console.warn('savagedus-companion | items bruts (sans compendium) :',
+      report.raw.map((r) => `${r.kind}/${r.name}`));
+  }
+  console.table(report.resolved.map((r) => ({
+    Nom: r.name, Type: r.kind, Source: r.source, Doublons: (r.duplicates ?? []).join(', '),
+  })));
+  ui.notifications.info(
+    `savagedus-companion | ${data.name} importé : ${resolvedCount} depuis compendiums, `
+    + `${rawCount} bruts, ${removed} doublons purgés.`,
+  );
+
+  // Rafraîchit la sidebar acteurs (v13 : ui.actors, pas ui.sidebar.tabs)
+  try {
+    ui.actors.render(true);
+  } catch (err) {
+    console.warn('savagedus-companion | rafraîchissement sidebar impossible:', err);
+  }
+
   return actor;
 }
-
-export { importCharacter, collectRequests };
