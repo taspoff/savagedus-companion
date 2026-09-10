@@ -576,12 +576,16 @@ export async function importCharacter(data, options = {}) {
     + `${rawCount} bruts, ${removed} doublons purgés.`,
   );
 
-  // Rafraîchit la sidebar acteurs (v13 : ui.actors, pas ui.sidebar.tabs)
+  // Rafraîchit la sidebar et ré-injecte le bouton d'import
+  // (le re-rendu recrée le DOM de l'en-tête et efface le bouton)
   try {
-    ui.actors.render(true);
+    const { refreshImportButton } = await import('./main.js');
+    ui.actors?.render(true);
+    refreshImportButton();
   } catch (err) {
     console.warn('savagedus-companion | rafraîchissement sidebar impossible:', err);
   }
+
 
   return actor;
 }
