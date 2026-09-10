@@ -50,7 +50,7 @@ function reviewDialog(toReview) {
         const options = r.suggestions
           .map((s, j) => {
             const pre = j === 0 && s.score >= PRESELECT_THRESHOLD ? ' selected' : '';
-            return `<option value="${s.uuid}"${pre}>${s.name} — ${Math.round(s.score * 100)} %</option>`;
+                  return `<option value="${s.uuid}"${pre}>${s.name} — ${Math.round(s.score * 100)} % [${s.pack ?? '?'}]</option>`;
           })
           .join('');
         return `
