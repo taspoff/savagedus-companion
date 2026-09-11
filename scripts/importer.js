@@ -469,11 +469,14 @@ export function deduplicateItems(actor) {
  * @param {object} [options] { skipDialog, manual } pour rejouer un import
  * @returns {Promise<Actor>}
  */
-export async function importCharacter(data, options = {}) {
+eexport async function importCharacter(data, options = {}) {
   if (!data?.name || typeof data !== 'object') {
     ui.notifications.error('savagedus-companion | fichier invalide (personnage sans nom).');
     throw new Error('Export savaged.us invalide.');
   }
+
+  // PC (character) par défaut ; NPC accepté pour les alliedExtras
+  const actorType = options.actorType === 'npc' ? 'npc' : 'character';
 
   const index = await buildIndex();
   const { plans, gearPlans } = collectRequests(data);
@@ -501,7 +504,7 @@ export async function importCharacter(data, options = {}) {
   // Étape 3 : création de l'acteur « nu »
   const actor = await Actor.create({
     name: data.name,
-    type: 'character',
+    type: actorType,
     img: data.image || undefined,
     ...(data.imageToken ? { prototypeToken: { texture: { src: data.imageToken } } } : {}),
   });
@@ -518,7 +521,11 @@ export async function importCharacter(data, options = {}) {
     updates['system.bennies.value'] = data.bennies;
     updates['system.bennies.max'] = data.benniesMax ?? data.bennies;
   }
-  if (data.wildcard !== undefined) updates['system.wildcard'] = !!data.wildcard;
+   if (data.wildcard !== undefined && actorType === 'character') {
+    updates['system.wildcard'] = !!data.wildcard;
+  }
+  // Pour un NPC, le statut Wild Card se règle via l'option
+  // « Wild Card ? » de la fiche (liste déroulante, pas un booléen)
   if (data.rankName) updates['system.rank'] = data.rankName.toLowerCase();
   // Pace : paceBase seulement (paceTotal inclut les mods raciaux déjà
   // portés par l'item ancestry — éviter le double comptage)
