@@ -391,3 +391,30 @@ export function suggestMatches(index, key) {
     preselect: i === 0 && score >= PRESELECT_THRESHOLD,
   }));
 }
+
+/**
+ * Inventorie les compendiums d'items installés, regroupés par
+ * namespace (package), avec un ordre initial suggéré.
+ * @returns {Array<{namespace:string, label:string, packs:number, suggested:number}>}
+ */
+export function detectPackGroups() {
+  const groups = new Map();
+  for (const pack of game.packs.values()) {
+    if (pack.documentName !== 'Item') continue;
+    const id = pack.metadata.id ?? pack.collection;
+    const ns = String(id).split('.')[0];
+    if (!ns || groups.has(ns)) continue;
+    groups.set(ns, {
+      namespace: ns,
+      label: pack.metadata.label ?? ns,
+      packs: [...game.packs.values()]
+        .filter((p) => (p.metadata.id ?? p.collection).split('.')[0] === ns
+          && p.documentName === 'Item').length,
+      // ordre suggéré : table par défaut, sinon inconnu (1)
+      suggested: DEFAULT_PRIORITY_ORDER.indexOf(ns) >= 0
+        ? DEFAULT_PRIORITY_ORDER.indexOf(ns)
+        : UNKNOWN_PACK_PRIORITY,
+    });
+  }
+  return [...groups.values()].sort((a, b) => a.suggested - b.suggested);
+}
