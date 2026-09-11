@@ -207,6 +207,7 @@ async function onImportClick(event) {
     console.error(`${MODULE_ID} | import échoué:`, err);
     ui.notifications.error(`${MODULE_ID} | import échoué (voir console).`);
   }
+};
 /* ------------------------------------------------------------------ */
 /* Amorçage                                                            */
 /* ------------------------------------------------------------------ */
