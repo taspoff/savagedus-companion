@@ -32,6 +32,7 @@ function resolveHtml(html) {
 }
 
 /** Ouvre un sélecteur de fichier JSON et retourne l'objet parsé. */
+/** Ouvre un sélecteur de fichier JSON et retourne l'objet parsé. */
 function pickJsonFile() {
   return new Promise((resolve, reject) => {
     const input = document.createElement('input');
@@ -40,27 +41,17 @@ function pickJsonFile() {
     input.style.display = 'none';
     document.body.appendChild(input);
 
-    const cleanup = () => {
-      input.remove();
-      window.removeEventListener('focus', onFocusWindow, true);
-    };
-    const onFocusWindow = () => {
-      setTimeout(() => {
-        if (document.body.contains(input)) { cleanup(); resolve(null); }
-      }, 500);
-    };
-    window.addEventListener('focus', onFocusWindow, true);
+    const cleanup = () => input.remove();
 
     input.addEventListener('change', () => {
       const file = input.files?.[0];
       if (!file) { cleanup(); resolve(null); return; }
       const reader = new FileReader();
       reader.onload = () => {
+        cleanup();
         try {
-          cleanup();
           resolve(JSON.parse(String(reader.result)));
         } catch (err) {
-          cleanup();
           reject(err);
         }
       };
@@ -74,7 +65,6 @@ function pickJsonFile() {
     input.click();
   });
 }
-
 /* ------------------------------------------------------------------ */
 /* Settings                                                            */
 /* ------------------------------------------------------------------ */
