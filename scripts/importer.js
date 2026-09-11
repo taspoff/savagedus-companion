@@ -338,12 +338,12 @@ function buildRawItem(plan) {
         type: 'shield',
         system: { parry: { value: p.parry ?? 0 }, weight: p.weight ?? 0, equipped: !!p.equipped },
       };
-    case 'armor':
+       case 'armor':
       return {
         name: plan.name,
         type: 'armor',
         system: {
-          armor: { value: Number(p.armor ?? 0) || 0 },
+          armor: Number(p.armor ?? 0) || 0, // nombre simple en 6.0.4
           weight: Number(p.weight ?? 0) || 0,
           equipped: !!p.equipped,
         },
