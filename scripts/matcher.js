@@ -28,7 +28,8 @@ export const DEFAULT_PRIORITY_ORDER = [
   'swpf-apg-2',
   'swpf-apg',
   'swpf-core-rules',
-  'swade-core-rules',
+  'swade',           // <- namespace réel du SRD (swade.edges, swade.powers...)
+  'swade-core-rules', // historique, gardé pour compat
   'swade-deluxe',
 ];
 
