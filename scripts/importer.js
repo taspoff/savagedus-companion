@@ -469,7 +469,7 @@ export function deduplicateItems(actor) {
  * @param {object} [options] { skipDialog, manual } pour rejouer un import
  * @returns {Promise<Actor>}
  */
-eexport async function importCharacter(data, options = {}) {
+export async function importCharacter(data, options = {}) {
   if (!data?.name || typeof data !== 'object') {
     ui.notifications.error('savagedus-companion | fichier invalide (personnage sans nom).');
     throw new Error('Export savaged.us invalide.');
