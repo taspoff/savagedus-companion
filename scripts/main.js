@@ -160,7 +160,16 @@ async function showIntroDialog() {
               style="flex:1;"><i class="fas fa-dragon"></i>&nbsp; Figure (NPC)</button>
           </div>
         </div>`,
-      buttons: [],
+      // DialogV2 impose au moins un bouton : Annuler sert de sortie
+      // propre (Esc/croix passent aussi par close ci-dessous)
+      buttons: [
+        {
+          action: 'cancel',
+          icon: 'fas fa-times',
+          label: 'Annuler',
+          callback: () => resolve(null),
+        },
+      ],
       close: () => resolve(null),
       modal: true,
     });
@@ -169,8 +178,8 @@ async function showIntroDialog() {
         btn.addEventListener('click', (event) => {
           event.preventDefault();
           const choice = btn.dataset.choice;
-          dlg.close({ force: true });
-          resolve(choice);
+          dlg.close({ force: true }); // déclenche close() -> resolve(null)...
+          resolve(choice);            // ...mais la première résolution gagne
         });
       }
     });
