@@ -1,18 +1,45 @@
-name: Release
+name: Release Module
+
 on:
   push:
-    tags: ['v*']
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
 jobs:
   release:
     runs-on: ubuntu-latest
-    permissions: { contents: write }
     steps:
-      - uses: actions/checkout@v4
-      - name: Pack
-        run: zip -r savagedus-companion.zip module.json LICENSE README.md scripts/
-      - name: Publish
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get tag version
+        id: tag
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Tag version: $VERSION"
+
+      - name: Update module.json version
+        run: |
+          jq --arg v "${{ steps.tag.outputs.version }}" '
+            .version = $v |
+            .download = (.download | sub("[0-9]+\\.[0-9]+\\.[0-9]+"; $v)) |
+            .manifest = (.manifest | sub("[0-9]+\\.[0-9]+\\.[0-9]+"; $v))
+          ' module.json > module.json.tmp && mv module.json.tmp module.json
+          cat module.json
+
+      - name: Create zip
+        run: zip -r ../${{ github.event.repository.name }}.zip . -x ".git/*" ".github/*" "node_modules/*"
+
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            savagedus-companion.zip
             module.json
+            ../${{ github.event.repository.name }}.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
