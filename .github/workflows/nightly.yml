@@ -3,7 +3,7 @@ name: Build Nightly Release
 on:
   push:
     branches: [main]
-  workflow_dispatch:   # permet aussi de le lancer à la main
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -15,17 +15,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Vérification syntaxe (comme ta CI actuelle)
+      - name: Checks syntaxe JS (comme ta CI actuelle)
         run: |
-          for f in $(find . -name "*.js" -not -path "./node_modules/*"); do
+          for f in scripts/*.js; do
             node --check "$f"
           done
 
-      - name: Injecter version + date nightly
+      - name: Injecter la version nightly
         run: |
-          DATE=$(date -u +%Y%m%d)
-          VERSION="nightly-${DATE}.${GITHUB_RUN_NUMBER}"
-          # Met à jour version et download dans module.json
+          VERSION="nightly-$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}"
           node -e "
             const fs = require('fs');
             const m = JSON.parse(fs.readFileSync('module.json', 'utf8'));
@@ -37,11 +35,10 @@ jobs:
           echo "NIGHTLY_VERSION=${VERSION}" >> $GITHUB_ENV
 
       - name: Créer le ZIP
-        run: zip -r savagedus-companion.zip module.json README.md LICENSE scripts/ styles/ templates/ lang/
+        run: zip -r savagedus-companion.zip module.json LICENSE README.md scripts/
 
       - name: Supprimer l'ancienne release nightly
-        run: |
-          gh release delete foundry-nightly --yes --cleanup-tag || true
+        run: gh release delete foundry-nightly --yes --cleanup-tag || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -51,6 +48,6 @@ jobs:
             savagedus-companion.zip module.json \
             --prerelease \
             --title "Nightly ${NIGHTLY_VERSION}" \
-            --notes "Build automatique du $(date -u). Version ${NIGHTLY_VERSION}."
+            --notes "Build automatique du $(date -u '+%d/%m/%Y %H:%M UTC'). Version ${NIGHTLY_VERSION}."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
