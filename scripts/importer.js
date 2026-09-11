@@ -603,3 +603,26 @@ export async function importCharacter(data, options = {}) {
 
   return actor; // <-- la ligne manquante
 }
+
+/**
+ * Téléverse une image distante dans le storage Foundry du module
+ * et retourne l'URL locale (fallback : l'URL d'origine si échec).
+ */
+async function localizeImage(url, actorName, kind = 'portrait') {
+  if (!url || !/^https?:\/\//i.test(url)) return url ?? '';
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const blob = await resp.blob();
+    const ext = (blob.type.split('/')[1] ?? 'png').replace('jpeg', 'jpg');
+    const fileName = `${slugify(actorName)}-${kind}.${ext}`;
+    const file = new File([blob], fileName, { type: blob.type });
+    const result = await FilePicker.uploadPersistent(
+      'savagedus-companion', 'images', file, {},
+    );
+    return result?.path ?? url;
+  } catch (err) {
+    console.warn('savagedus-companion | image non téléversée, URL d\'origine conservée:', url, err);
+    return url;
+  }
+}
