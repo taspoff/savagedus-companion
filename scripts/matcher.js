@@ -41,14 +41,24 @@ const UNKNOWN_PACK_PRIORITY = 1;
 /**
  * Alias explicites : `${type}:${slug-savaged}` -> slug(s) compendium.
  * Chaque cible est essayée avant de retomber sur le matching fuzzy.
- * À vérifier/étendre avec les swids réels de vos compendiums.
+ *
+ * Fige d'après les diagnostics console (swids réels) :
+ * - les armures Leather du core SWADE n'ont PAS de swid ('none') :
+ *   matching par slug de nom du compendium ;
+ * - "Dagger/Knife" existe en SWPF (swid daggerknife) — la priorité
+ *   de pack écarte les variantes SRD melee/throwing ;
+ * - savaged.us inverse l'ordre des mots pour les boucliers
+ *   ("Shield, Light" -> compendium "Light Shield").
  */
 export const ALIASES = {
-  'armor:leather-cap': ['leather-cap', 'leather-armor'],
-  'armor:leather-jacket': ['leather-jacket', 'leather-armor'],
-  'armor:leather-leggings': ['leather-leggings', 'leather-armor'],
-  'weapon:sword-short': ['short-sword'],
-  'weapon:dagger-knife': ['dagger', 'knife'],
+  // Armures core SWADE : pas de swid, matching par slug de nom.
+  'armor:leather-cap':      ['cap-cloth-light-leather'],
+  'armor:leather-jacket':   ['jacket-cloth-light-leather'],
+  'armor:leather-leggings': ['leggings-cloth-light-leather'],
+  // Armes SWPF
+  'weapon:dagger-knife':    ['daggerknife'],
+  // Boucliers : ordre des mots inversé chez savaged.us
+  'shield:light':           ['light-shield'],
 };
 
 /** Entrées savaged.us à ignorer totalement (gérées nativement par SWADE). */
@@ -134,7 +144,7 @@ function tokenOverlap(setA, setB) {
  * Priorité d'un pack : setting `priorityPacks` (ids séparés par des
  * virgules, ordre = priorité) > DEFAULT_PRIORITY_ORDER > intermédiaire.
  * Compare l'id complet ET le namespace (avant le point), car les ids
- * réels sont de la forme `swpf-core-rules.core-items`.
+ * réels sont de la forme `swpf-core-rules.swpf-gear`.
  */
 export function getPriority(index, packId) {
   const full = String(packId ?? '').toLowerCase();
@@ -228,7 +238,7 @@ export async function buildIndex(force = false) {
         priority,
       };
 
-      // Enregistrement sous le slug de nom ET le swid (dedupliqués).
+      // Enregistrement sous le slug de nom ET le swid (dédupliqués).
       for (const key of new Set([nameSlug, swid].filter(Boolean))) {
         if (!index.bySlug.has(key)) index.bySlug.set(key, []);
         index.bySlug.get(key).push(entry);
@@ -303,14 +313,15 @@ export function findRecord(index, key) {
 }
 
 /**
- * Doublons inter-packs : entrées partageant le même slug de nom/swid.
- * Retourne [] si aucune ambiguïté. Utile pour l'affichage du
- * récapitulatif (« résolu depuis swpf-apg, existe aussi dans SRD »).
+ * Doublons inter-packs : entrées partageant le même slug de nom/swid,
+ * filtrées par compatibilité de type pour éviter le bruit des
+ * compétences/actions homonymes.
+ * Retourne [] si aucune ambiguïté.
  */
-export function getDuplicates(index, name) {
+export function getDuplicates(index, name, requestedType = null) {
   const slug = slugify(name);
   const list = (index.bySlug.get(slug) ?? []).filter(
-    (e) => e.pack && e.uuid,
+    (e) => e.pack && e.uuid && typeAccepts(requestedType, e.type),
   );
   return list.length > 1
     ? list.map((e) => ({
@@ -330,10 +341,6 @@ export function getDuplicates(index, name) {
  * Suggestions scorées (Dice + recouvrement de tokens), triées par score
  * décroissant puis priorité de pack. La meilleure est pré-cochée si son
  * score atteint PRESELECT_THRESHOLD.
- *
- * @param {object} index résultat de buildIndex()
- * @param {{ type: string, name: string }} key
- * @returns {Array<{uuid,name,type,pack,packLabel,score,preselect}>}
  */
 export function suggestMatches(index, key) {
   const nameSlug = slugify(key.name);
