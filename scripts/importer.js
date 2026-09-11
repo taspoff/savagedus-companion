@@ -127,15 +127,22 @@ export function collectRequests(data) {
     plans.push({ kind: 'hindrance', name: base, payload: h, hindranceInfo: info });
   }
 
-  // Pouvoirs : hébergés dans abs[].powers[], matchés sur originalName
+   // Pouvoirs : hébergés dans abs[].powers[], matchés sur originalName.
+  // On transporte aussi l'arcane skill de l'AB pour pré-remplir
+  // system.arcaneSkill (ex. Faith pour un prêtre, Spellcasting pour
+  // un magicien) — le type de compétence suit l'AB d'origine.
   for (const ab of Array.isArray(data.abs) ? data.abs : []) {
+    const arcaneSkill = ab?.arcaneSkill ? slugify(ab.arcaneSkill) : '';
     for (const p of Array.isArray(ab.powers) ? ab.powers : []) {
       const bookName = p?.originalName || p?.name;
       if (!bookName) continue;
-      plans.push({ kind: 'power', name: stripParentheses(bookName), payload: p });
+      plans.push({
+        kind: 'power',
+        name: stripParentheses(bookName),
+        payload: { ...p, _arcaneSkill: arcaneSkill },
+      });
     }
   }
-
   // Capacités spéciales hors raciales (les raciales sont granted par l'ancestry)
   for (const a of Array.isArray(data.abilities) ? data.abilities : []) {
     if (!a?.name) continue; // entrée de synthèse sans nom : ignorée
@@ -382,9 +389,12 @@ function decorate(doc, plan) {
   switch (plan.kind) {
     case 'power': {
       doc.name = p.customName || doc.name || plan.name;
+      doc.system = doc.system ?? {};
+      // Pré-sélectionne la compétence d'incantation (Faith, Spellcasting…)
+      // telle que définie dans l'Arcane Background de l'export
+      if (p._arcaneSkill) doc.system.arcaneSkill = p._arcaneSkill;
       const trapping = p.customDescription || p.description || '';
       if (trapping) {
-        doc.system = doc.system ?? {};
         doc.system.notes = doc.system.notes
           ? `${doc.system.notes}<hr/><p><em>${trapping}</em></p>`
           : trapping;
@@ -420,6 +430,11 @@ function decorate(doc, plan) {
       doc.system = doc.system ?? {};
       doc.system.equipped = !!p.equipped;
       doc.system.quantity = p.quantity ?? 1;
+      break;
+    case 'edge':
+      // Si l'edge vient d'un AB savaged.us, on ne touche pas au compendium
+      // (le champ arcane skill est spécifique au système) — mais en brut :
+      doc.system = doc.system ?? {};
       break;
     default:
       break;
