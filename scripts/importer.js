@@ -271,7 +271,7 @@ async function resolvePlan(index, plan, manual, report) {
     try {
       const doc = await fromUuid(manualChoice);
       if (doc) {
-        report.resolved.push({ name: plan.name, kind: plan.kind, source: 'manuel', pack: doc.pack?.metadata?.label ?? '?' });
+          report.resolved.push({ name: plan.name, kind: plan.kind, source: rec.packLabel, packId: rec.pack, duplicates: dups });
         return doc.toObject();
       }
     } catch (err) {
