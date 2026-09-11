@@ -586,7 +586,7 @@ export async function importCharacter(data, options = {}) {
       report.raw.map((r) => `${r.kind}/${r.name}`));
   }
   console.table(report.resolved.map((r) => ({
-    Nom: r.name, Type: r.kind, Source: r.source, Doublons: (r.duplicates ?? []).join(', '),
+    Nom: r.name, Type: r.kind, Source: r.packId ?? r.source, Doublons: (r.duplicates ?? []).join(', '),
   })));
   ui.notifications.info(
     `savagedus-companion | ${data.name} importé : ${resolvedCount} depuis compendiums, `
