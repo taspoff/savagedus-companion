@@ -594,9 +594,12 @@ export async function importCharacter(data, options = {}) {
   );
 
   // Rafraîchit la sidebar (le bouton est maintenu par l'observer de main.js)
+    // Rafraîchit la sidebar (le bouton est maintenu par l'observer de main.js)
   try {
     ui.actors?.render(true);
   } catch (err) {
     console.warn('savagedus-companion | rafraîchissement sidebar impossible:', err);
   }
+
+  return actor; // <-- la ligne manquante
 }
