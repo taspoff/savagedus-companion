@@ -70,16 +70,107 @@ function pickJsonFile() {
 /* ------------------------------------------------------------------ */
 
 function registerSettings() {
-  game.settings.register(MODULE_ID, 'priorityPacks', {
-    name: 'Ordre de priorité des packs',
-    hint: 'Ids de compendiums séparés par des virgules, du plus prioritaire '
-      + 'au moins prioritaire (ex. "swpf-apg-2,swpf-apg,swpf-core-rules"). '
-      + 'Surcharge la priorité par défaut.',
+  game.settings.register(MODULE_ID, 'priorityPacks', { /* inchangé */ });
+  // Nouveau : marqueur de première configuration
+  game.settings.register(MODULE_ID, 'configured', {
     scope: 'world',
-    config: true,
-    type: String,
-    default: '',
-    onChange: () => invalidateIndex(),
+    config: false,
+    type: Boolean,
+    default: false,
+  });
+}
+
+/** Dialogue de priorisation des packs (première fois ou à la demande). */
+async function showPackPrioritizer() {
+  const { detectPackGroups } = await import('./matcher.js');
+  const groups = detectPackGroups();
+  if (!groups.length) return;
+
+  const renderList = () => {
+    const items = groups.map((g, i) => `
+      <li data-index="${i}" style="display:flex;align-items:center;gap:6px;padding:2px 0;">
+        <span style="flex:1;">${g.label} <small style="color:grey;">(${g.namespace} · ${g.packs} packs)</small></span>
+        <button type="button" data-move="up" ${i === 0 ? 'disabled' : ''}><i class="fas fa-arrow-up"></i></button>
+        <button type="button" data-move="down" ${i === groups.length - 1 ? 'disabled' : ''}><i class="fas fa-arrow-down"></i></button>
+      </li>`).join('');
+    const ol = document.querySelector('.savagedus-packlist');
+    if (ol) ol.innerHTML = items; // re-render sur déplacement
+    else return items;
+    // rattacher les listeners après chaque re-render
+    for (const btn of ol.querySelectorAll('button[data-move]')) {
+      btn.addEventListener('click', () => {
+        const li = btn.closest('li');
+        const i = Number(li.dataset.index);
+        const j = btn.dataset.move === 'up' ? i - 1 : i + 1;
+        [groups[i], groups[j]] = [groups[j], groups[i]];
+        renderList();
+      });
+    }
+  };
+
+  return new Promise((resolve) => {
+    const dlg = new foundry.applications.api.DialogV2({
+      window: { title: 'savaged.us — Priorisation des compendiums' },
+      content: `
+        <style>.savagedus-packlist{list-style:none;padding:0;margin:8px 0;}</style>
+        <p>Le module relie les entrées savaged.us à vos compendiums.
+        Classez-les du <strong>plus prioritaire</strong> au moins prioritaire :
+        en cas de doublon, l'entrée viendra du pack le plus haut
+        (l'ordre actuel est une suggestion, ajustez librement).</p>
+        <ol class="savagedus-packlist">${renderList()}</ol>`,
+      buttons: [
+        {
+          action: 'save',
+          icon: 'fas fa-check',
+          label: 'Enregistrer',
+          callback: () => resolve('save'),
+        },
+        {
+          action: 'skip',
+          label: 'Garder les défauts',
+          callback: () => resolve('skip'),
+        },
+      ],
+      close: () => resolve(null),
+      modal: true,
+    });
+    dlg.render(true).then(() => {
+      const ol = dlg.element.querySelector('.savagedus-packlist');
+      // listeners initiaux (renderList a déjà posé le HTML dans le template)
+      wireList(ol);
+    });
+
+    // factorisation du re-bind
+    function wireList(ol) {
+      for (const btn of ol.querySelectorAll('button[data-move]')) {
+        btn.addEventListener('click', () => {
+          const li = btn.closest('li');
+          const i = Number(li.dataset.index);
+          const j = btn.dataset.move === 'up' ? i - 1 : i + 1;
+          if (j < 0 || j >= groups.length) return;
+          [groups[i], groups[j]] = [groups[j], groups[i]];
+          ol.innerHTML = groups.map((g, k) => `
+            <li data-index="${k}" style="display:flex;align-items:center;gap:6px;padding:2px 0;">
+              <span style="flex:1;">${g.label} <small style="color:grey;">(${g.namespace} · ${g.packs} packs)</small></span>
+              <button type="button" data-move="up" ${k === 0 ? 'disabled' : ''}><i class="fas fa-arrow-up"></i></button>
+              <button type="button" data-move="down" ${k === groups.length - 1 ? 'disabled' : ''}><i class="fas fa-arrow-down"></i></button>
+            </li>`).join('');
+          wireList(ol);
+        });
+      }
+    }
+    // mémorise l'état final pour le callback "Enregistrer"
+    dlg._getOrder = () => groups.map((g) => g.namespace);
+  }).then(async (result) => {
+    if (result !== 'save') {
+      // même en "skip", on marque configuré pour ne plus reposser la question
+      await game.settings.set(MODULE_ID, 'configured', true);
+      return;
+    }
+    await game.settings.set(MODULE_ID, 'priorityPacks', groups.map((g) => g.namespace).join(','));
+    await game.settings.set(MODULE_ID, 'configured', true);
+    ui.notifications.info(`${MODULE_ID} | priorité des compendiums enregistrée.`);
+    invalidateIndex(); // l'index sera reconstruit avec le nouvel ordre
   });
 }
 
@@ -216,11 +307,9 @@ Hooks.once('init', () => {
   registerSettings();
 });
 
-Hooks.once('ready', () => {
+Hooks.once('ready', async () => {
   if (!game.modules.get(MODULE_ID)?.active) return;
   console.log(`${MODULE_ID} | prêt (Foundry ${game.version})`);
-
-  // Injection initiale
   tryInject();
 
   // Surveillance permanente : si l'en-tête de l'onglet Acteurs est
@@ -231,4 +320,8 @@ Hooks.once('ready', () => {
     tryInject();
   });
   observer.observe(document.body, { childList: true, subtree: true });
+    // Première configuration : proposer la priorisation des packs
+  if (!game.settings.get(MODULE_ID, 'configured')) {
+    showPackPrioritizer();
+  }
 });
