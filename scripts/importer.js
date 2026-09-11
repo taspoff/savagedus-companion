@@ -131,7 +131,7 @@ export function collectRequests(data) {
   // On transporte aussi l'arcane skill de l'AB (ex. Faith) pour
   // pré-remplir system.arcaneSkill de chaque pouvoir importé.
   for (const ab of Array.isArray(data.abs) ? data.abs : []) {
-    const arcaneSkill = ab?.arcaneSkill ? slugify(ab.arcaneSkill) : '';
+    const arcaneSkill = ab?.arcaneSkill ? String(ab.arcaneSkill).trim() : '';
     for (const p of Array.isArray(ab.powers) ? ab.powers : []) {
       const bookName = p?.originalName || p?.name;
       if (!bookName) continue;
@@ -370,7 +370,7 @@ function buildRawItem(plan) {
       };
     }
     case 'power':
-      return { name: plan.payload?.customName ?? plan.name, type: 'power', system: { ...(p._arcaneSkill ? { arcaneSkill: p._arcaneSkill } : {}) }, };
+      return { name: plan.payload?.customName ?? plan.name, type: 'power',  system: { actions: { cast: { trait: p._arcaneSkill } } }, };
     case 'gear':
       return {
         name: plan.name,
@@ -389,12 +389,18 @@ function decorate(doc, plan) {
     case 'power': {
       doc.name = p.customName || doc.name || plan.name;
       doc.system = doc.system ?? {};
-      // Compétence d'incantation pré-sélectionnée depuis l'AB savaged.us
-      if (p._arcaneSkill) doc.system.arcaneSkill = p._arcaneSkill;
-      doc.system = doc.system ?? {};
-      // Pré-sélectionne la compétence d'incantation (Faith, Spellcasting…)
-      // telle que définie dans l'Arcane Background de l'export
-      if (p._arcaneSkill) doc.system.arcaneSkill = p._arcaneSkill;
+      // Compétence d'incantation : transportée depuis l'AB savaged.us.
+      // SWADE 6.x la référence dans le champ `trait` de l'action `cast`
+      // (valeur lisible : "Faith", pas de slug), champ `arcane` restant vide.
+      if (p._arcaneSkill) {
+        doc.system.actions = doc.system.actions ?? {};
+        const cast = doc.system.actions.cast ?? {};
+        // Ne pas écraser un trait déjà défini par le compendium,
+        // sauf s'il est vide
+        if (!cast.trait) {
+          doc.system.actions.cast = { ...cast, trait: p._arcaneSkill };
+        }
+      }
       const trapping = p.customDescription || p.description || '';
       if (trapping) {
         doc.system.notes = doc.system.notes
