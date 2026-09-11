@@ -127,10 +127,9 @@ export function collectRequests(data) {
     plans.push({ kind: 'hindrance', name: base, payload: h, hindranceInfo: info });
   }
 
-   // Pouvoirs : hébergés dans abs[].powers[], matchés sur originalName.
-  // On transporte aussi l'arcane skill de l'AB pour pré-remplir
-  // system.arcaneSkill (ex. Faith pour un prêtre, Spellcasting pour
-  // un magicien) — le type de compétence suit l'AB d'origine.
+    // Pouvoirs : hébergés dans abs[].powers[], matchés sur originalName.
+  // On transporte aussi l'arcane skill de l'AB (ex. Faith) pour
+  // pré-remplir system.arcaneSkill de chaque pouvoir importé.
   for (const ab of Array.isArray(data.abs) ? data.abs : []) {
     const arcaneSkill = ab?.arcaneSkill ? slugify(ab.arcaneSkill) : '';
     for (const p of Array.isArray(ab.powers) ? ab.powers : []) {
@@ -371,7 +370,7 @@ function buildRawItem(plan) {
       };
     }
     case 'power':
-      return { name: plan.payload?.customName ?? plan.name, type: 'power', system: {} };
+      return { name: plan.payload?.customName ?? plan.name, type: 'power', system: { ...(p._arcaneSkill ? { arcaneSkill: p._arcaneSkill } : {}) }, };
     case 'gear':
       return {
         name: plan.name,
@@ -389,6 +388,9 @@ function decorate(doc, plan) {
   switch (plan.kind) {
     case 'power': {
       doc.name = p.customName || doc.name || plan.name;
+      doc.system = doc.system ?? {};
+      // Compétence d'incantation pré-sélectionnée depuis l'AB savaged.us
+      if (p._arcaneSkill) doc.system.arcaneSkill = p._arcaneSkill;
       doc.system = doc.system ?? {};
       // Pré-sélectionne la compétence d'incantation (Faith, Spellcasting…)
       // telle que définie dans l'Arcane Background de l'export
