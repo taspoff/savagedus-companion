@@ -195,12 +195,18 @@ async function onImportClick(event) {
 
   try {
     const actor = await importCharacter(data, { actorType });
-    ui.notifications.info(`${MODULE_ID} | ${actor.name} importé avec succès (${actorType === 'npc' ? 'NPC' : 'PC'}).`);
+    if (actor) {
+      ui.notifications.info(`${MODULE_ID} | ${actor.name} importé avec succès.`);
+    } else {
+      // l'import s'est déroulé mais l'acteur n'a pas été retourné —
+      // regarder le rapport console, l'acteur est probablement créé
+      console.warn(`${MODULE_ID} | import terminé mais acteur non retourné (voir rapport console).`);
+      ui.notifications.info(`${MODULE_ID} | import terminé (rapport en console).`);
+    }
   } catch (err) {
     console.error(`${MODULE_ID} | import échoué:`, err);
     ui.notifications.error(`${MODULE_ID} | import échoué (voir console).`);
   }
-}
 /* ------------------------------------------------------------------ */
 /* Amorçage                                                            */
 /* ------------------------------------------------------------------ */
