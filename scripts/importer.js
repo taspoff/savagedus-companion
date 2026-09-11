@@ -477,7 +477,9 @@ export async function importCharacter(data, options = {}) {
 
   // PC (character) par défaut ; NPC accepté pour les alliedExtras
   const actorType = options.actorType === 'npc' ? 'npc' : 'character';
-
+  const portrait = await localizeImage(data.image || data.img || '', data.name, 'portrait');
+  const tokenImg = await localizeImage(
+    data.imageToken || data.token || '', data.name, 'token');
   const index = await buildIndex();
   const { plans, gearPlans } = collectRequests(data);
   const allPlans = [...plans, ...gearPlans];
